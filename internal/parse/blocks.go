@@ -4,16 +4,19 @@ import "gopkg.in/yaml.v3"
 
 // Triggers reads the workflow's on: block.
 //
-// The key is read as node text rather than as a resolved value. Under YAML 1.1,
-// which most readers still implement, an unquoted `on` is the boolean true, so
-// `on: push` arrives as the key `true`. Rules 7, 8, and 9 then never fire, and
-// nothing errors. Reading the key as text is what makes the block a trigger.
+// The key is read as node text. Under YAML 1.1, which some readers still
+// implement, an unquoted `on` resolves to the boolean true, so `on: push`
+// arrives carrying the key `true`. Rules 7, 8, and 9 then never fire and nothing
+// errors.
 //
-// gopkg.in/yaml.v3 resolves on as a string, so today the text read and the
-// resolved value happen to agree. They are not the same thing: the code does
-// not depend on which YAML version the library implements, and a swap to a
-// 1.1 reader cannot silently disarm three rules. TestTriggersOnKeyIsNotABoolean
-// is the guard.
+// Note what protects us here, because it is narrower than it looks. We read
+// node.Value, and a YAML 1.1 reader would have rewritten that value to "true",
+// so pairs() would record the key as "true" and this function would never be
+// called. Reading the key as text does not by itself survive a 1.1 reader: the
+// original spelling is not recoverable from the node. What actually holds the
+// line is TestOnKeyIsReadAsText in quirk_test.go, which asserts on the reader's
+// behavior directly and fails on a dependency upgrade rather than silently
+// disarming three rules.
 func (p *parser) triggers(node *yaml.Node) (Triggers, error) {
 	triggers := Triggers{Present: true, Line: node.Line}
 
