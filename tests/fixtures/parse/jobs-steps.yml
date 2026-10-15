@@ -1,0 +1,31 @@
+# Steps grouped by job, which is the grouping rule 6 correlates on.
+#
+# job "harvest" has both halves of its trigger, fetch-depth: 0 on a checkout and
+# a history scan in the same job. job "report" has a history scan and no deep
+# checkout. A walk that treated the file as one flat list of steps would see
+# both signals on every job; the grouping is what keeps them apart.
+name: ci
+
+on: push
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: scan history
+        run: git log -p -n 100
+
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: summarize history
+        run: git log -p -n 10
+
+  unrelated:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo nothing to see here

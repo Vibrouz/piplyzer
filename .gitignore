@@ -2,8 +2,10 @@
 # Already committed once; untrack with: git rm -r --cached plans/
 plans/
 
-# Go build output
-ppe
+# Go build output. The binary pattern is root anchored: a bare "ppe" also
+# matches the cmd/ppe source directory, which would leave the entrypoint
+# untracked while still ignoring the built binary.
+/ppe
 *.exe
 *.test
 *.out

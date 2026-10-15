@@ -1,0 +1,39 @@
+# Every location a uses: reference can appear, in one file so that a walk which
+# only looks at steps cannot pass this fixture.
+#
+#   workflow level   uses:            (not part of GitHub's workflow schema,
+#                                     parsed anyway so a shape we do not
+#                                     recognize cannot hide a mutable ref)
+#   job level        jobs.<id>.uses:  (reusable workflow call, the more
+#                                     dangerous case: it runs another
+#                                     repository's jobs)
+#   step level       steps[*].uses:   (an action)
+uses: example/ci/.github/workflows/reusable.yml@main
+
+jobs:
+  # Reusable workflow call, SHA pinned, pointing at another repository.
+  call-reusable:
+    uses: other-org/infra/.github/workflows/build.yml@5f3b1c0d4e8a9b2c7d6e5f4a3b2c1d0e9f8a7b6c
+    with:
+      target: staging
+
+  action-steps:
+    runs-on: ubuntu-latest
+    steps:
+      # Tag ref, the shape rule 1 is about.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Full commit SHA, already pinned.
+      - uses: actions/setup-node@1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d
+        with:
+          node-version: '20'
+
+      # Local action in this repository. Not third party code.
+      - uses: ./.github/actions/build
+
+      # Container action, not a repository reference.
+      - uses: docker://alpine:3.19
+        with:
+          args: echo hi
