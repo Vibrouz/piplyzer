@@ -1,0 +1,44 @@
+# permissions: at both levels, so the inheritance chain has something to
+# resolve. Rule 11 depends on this: a job with no block of its own inherits the
+# workflow block, so "no permissions block" only means something once the chain
+# has been walked.
+#
+#   write-all          the workflow level block
+#   explicit map       contents read plus id-token write, at job level
+#   read-all           a job that restricts itself
+#   (absent)           two jobs that inherit, which must resolve to read-all
+#   (absent)           one job that declares its own write-all
+permissions: write-all
+
+jobs:
+  inherits-read-all:
+    permissions: read-all
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo one
+
+  inherits-workflow-write-all:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo two
+
+  explicit-map:
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo three
+
+  declares-write-all:
+    permissions: write-all
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo four
+
+  # An empty permissions key: present, but granting nothing on its face.
+  empty-block:
+    permissions:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo five

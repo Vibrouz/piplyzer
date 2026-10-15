@@ -1,0 +1,8 @@
+# The on: block written as a single value rather than as a mapping.
+on: push
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build

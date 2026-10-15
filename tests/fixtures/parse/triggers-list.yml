@@ -1,0 +1,8 @@
+# The on: block written as a list rather than as a mapping.
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build

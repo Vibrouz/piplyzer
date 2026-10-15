@@ -1,0 +1,29 @@
+# Real trigger shapes, the kind a repository actually has on disk.
+#
+# This fixture exists because a workflow with no on: block parses cleanly
+# against a broken parser. A trigger rule tested only against such a file looks
+# green while never firing, so the on: block has to be here before any trigger
+# rule is written.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request_target:
+    types: [opened, synchronize]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_call:
+    inputs:
+      reason:
+        required: true
+        type: string
+
+permissions: read-all
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build
