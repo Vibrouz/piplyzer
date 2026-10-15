@@ -1,0 +1,15 @@
+# Planning docs: local working material, not part of the deliverable.
+# Already committed once; untrack with: git rm -r --cached plans/
+plans/
+
+# Go build output
+ppe
+*.exe
+*.test
+*.out
+coverage.out
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
