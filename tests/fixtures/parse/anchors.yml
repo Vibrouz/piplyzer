@@ -1,0 +1,43 @@
+# YAML anchors and aliases, which GitHub Actions has resolved since September
+# 18, 2025. A workflow using them runs, so the parser has to see the content
+# they pull in rather than failing on the file.
+#
+# Note the line numbers the tests expect: content reached through an alias keeps
+# the line of its anchor definition, because that is where the text is written.
+name: ci
+
+on: push
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env: &shared
+      NODE_ENV: production
+      AWS_ACCESS_KEY_ID: AKIAIOSFODNN7EXAMPLE
+    steps:
+      - run: npm ci
+      - uses: actions/setup-node@1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d
+
+  # The whole env mapping arrives through an alias, so the credential pattern
+  # rule 5's sibling scans have to be able to see it here.
+  test:
+    runs-on: ubuntu-latest
+    env: *shared
+    steps:
+      - run: npm test
+
+  # A whole step list behind one alias.
+  release: &release
+    runs-on: ubuntu-latest
+    steps:
+      - run: git log -p -n 5
+      - run: echo done
+
+  # A scalar behind an alias, which is how a shared script is written.
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - run: &deployScript |
+          set -euo pipefail
+          curl https://example.invalid/install.sh | bash
+      - run: *deployScript

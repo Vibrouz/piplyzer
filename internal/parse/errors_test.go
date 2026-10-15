@@ -59,9 +59,9 @@ func TestParseFailures(t *testing.T) {
 			wantMsg: "",
 		},
 		{
-			name:    "alias hides content from a node walk",
-			src:     "steps: &shared\n  - run: echo hi\njobs:\n  build:\n    steps: *shared\n",
-			wantMsg: "YAML alias",
+			name:    "anchor referring back to itself",
+			src:     "steps: &loop\n  - *loop\njobs:\n  build:\n    steps: []\n",
+			wantMsg: "anchor refers back to itself",
 		},
 		{
 			name:    "job is a list",

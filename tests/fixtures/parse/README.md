@@ -14,6 +14,7 @@
 # | run-block-scalars.yml | `run: |`, `|-`, `>`, quoted, and empty forms             |
 # | permissions.yml       | `permissions:` at workflow and job level, and the jobs that inherit |
 # | jobs-steps.yml        | steps grouped per job, the grouping rule 6 correlates on |
+| anchors.yml           | anchors and aliases, which Actions resolves, including a mapping, a block scalar, and the line numbers aliased content keeps |
 #
 # The credentials in run-block-scalars.yml are pattern-matching fakes
 # (AKIAIOSFODNN7EXAMPLE is the documentation example value). They exist so the

@@ -1,5 +1,14 @@
 package parse
 
+// mergeKey is the YAML merge key, `<<:`.
+//
+// Actions does not support merge keys: the keys behind one never reach the
+// runner. They are skipped rather than merged, so a workflow that writes one
+// is parsed exactly as the runner will see it. Merging them here would put
+// content in front of the rules that the workflow does not actually run, which
+// is a false positive on a file that is already misconfigured.
+const mergeKey = "<<"
+
 // Value is one entry of a workflow mapping whose values are plain scalars: a
 // step's with: inputs, a job's env:, or the entries of a permissions: block.
 type Value struct {

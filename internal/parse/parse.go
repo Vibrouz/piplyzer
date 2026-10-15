@@ -18,6 +18,10 @@
 //     their own. PermissionsFor resolves the chain.
 //   - Steps belong to jobs. Job.Steps is the grouping that decides whether
 //     fetch-depth: 0 and git log -p are in the same job.
+//   - Anchors and aliases are expanded, because Actions resolves them (since
+//     September 18, 2025) and a workflow that uses them runs. Merge keys are
+//     the exception and are deliberately left alone, because Actions does not
+//     support them.
 //
 // A file either parses completely or returns an error. There is no partially
 // parsed workflow, because a rule that skips the part it could not read is a
@@ -292,8 +296,7 @@ func (p *parser) root(data []byte) (*yaml.Node, error) {
 		return nil, p.errf(root.Line, "workflow must be a mapping of keys, got %s", kindName(root.Kind))
 	}
 	if alias := findAlias(root); alias != nil {
-		return nil, p.errf(alias.Line,
-			"YAML alias: the workflow resolves through an anchor, so the parsed file would not be the file that runs")
+		return p.expand(root)
 	}
 	return root, nil
 }
@@ -509,6 +512,9 @@ func (p *parser) matrix(node *yaml.Node) (*Matrix, error) {
 		return nil, err
 	}
 	for _, entry := range pairs {
+		if entry.key == mergeKey {
+			continue
+		}
 		item := MatrixEntry{Name: entry.key, Line: entry.val.Line}
 		switch {
 		case p.isNull(entry.val):
@@ -616,6 +622,9 @@ func (p *parser) values(node *yaml.Node, what string) (Values, error) {
 	}
 	out := make(Values, 0, len(pairs))
 	for _, entry := range pairs {
+		if entry.key == mergeKey {
+			continue
+		}
 		text, err := p.text(entry.val, what+"."+entry.key)
 		if err != nil {
 			return nil, err
@@ -641,6 +650,67 @@ func findAlias(node *yaml.Node) *yaml.Node {
 		}
 	}
 	return nil
+}
+
+const (
+	// maxAliasDepth bounds how far alias dereferencing may nest. It is what
+	// catches a cyclic anchor, where an anchor's own body contains an alias
+	// back to it: the YAML reader accepts that happily and hands back a tree
+	// that never bottoms out.
+	maxAliasDepth = 16
+	// maxExpandedNodes bounds the size of the expanded tree. It is what stops an
+	// anchor referenced many times over from costing more than the scan it is
+	// part of.
+	maxExpandedNodes = 200000
+)
+
+// expand replaces every alias with the content it points at.
+//
+// Actions resolves YAML anchors and aliases, added September 18, 2025, so a
+// workflow that uses them runs and has to be scanned. Rejecting them instead
+// would fail the scan on a valid workflow, and a false positive on a gate is
+// not a cheap thing.
+//
+// Two consequences worth knowing. Content reached through an alias keeps the
+// line number of its anchor definition, because that is the line the text is
+// actually written on. And merge keys are deliberately not implemented: Actions
+// does not support them, so the keys behind a `<<:` never reach the runner and
+// merging them here would find content the workflow does not run.
+func (p *parser) expand(root *yaml.Node) (*yaml.Node, error) {
+	budget := maxExpandedNodes
+	return p.expandNode(root, 0, &budget)
+}
+
+func (p *parser) expandNode(node *yaml.Node, depth int, budget *int) (*yaml.Node, error) {
+	if *budget <= 0 {
+		return nil, p.errf(node.Line, "workflow expands to more than %d nodes through YAML aliases", maxExpandedNodes)
+	}
+	*budget--
+
+	if node.Kind == yaml.AliasNode {
+		if node.Alias == nil {
+			return nil, p.errf(node.Line, "YAML alias %q does not resolve to an anchor", node.Value)
+		}
+		if depth >= maxAliasDepth {
+			return nil, p.errf(node.Line,
+				"YAML aliases nest more than %d deep, which means an anchor refers back to itself", maxAliasDepth)
+		}
+		return p.expandNode(node.Alias, depth+1, budget)
+	}
+
+	if len(node.Content) == 0 {
+		return node, nil
+	}
+	expanded := *node
+	expanded.Content = make([]*yaml.Node, len(node.Content))
+	for i, child := range node.Content {
+		expandedChild, err := p.expandNode(child, depth, budget)
+		if err != nil {
+			return nil, err
+		}
+		expanded.Content[i] = expandedChild
+	}
+	return &expanded, nil
 }
 
 func stepID(jobID string, number int) string {
