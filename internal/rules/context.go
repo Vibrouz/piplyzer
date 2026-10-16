@@ -102,7 +102,7 @@ func mentionsRealSecret(text string) bool {
 			if !strings.HasPrefix(text[pos+len(marker):], "GITHUB_TOKEN") {
 				return true
 			}
-			idx = pos + len(marker)
+			idx = pos + len(marker) + len("GITHUB_TOKEN")
 		}
 	}
 	return false
