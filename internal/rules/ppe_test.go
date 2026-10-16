@@ -966,3 +966,37 @@ func TestRule2PointsAtTheMatchedLine(t *testing.T) {
 		t.Errorf("first finding line = %d, want %d", first.Location.Line, want)
 	}
 }
+
+// lineAt maps an offset in a script back to a file line. The guard for an
+// offset outside the script matters because a finding must never be placed on a
+// line that does not exist.
+func TestRunSiteLineAt(t *testing.T) {
+	site := runSite{script: "one\ntwo\nthree\n", runLine: 10}
+
+	tests := []struct {
+		name   string
+		offset int
+		want   int
+	}{
+		{"start of the script", 0, 10},
+		{"after the first newline", 4, 11},
+		{"after the second newline", 8, 12},
+		{"end of the script", len(site.script), 13},
+		{"past the end", len(site.script) + 10, 10},
+		{"negative", -1, 10},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := site.lineAt(tt.offset); got != tt.want {
+				t.Errorf("lineAt(%d) = %d, want %d", tt.offset, got, tt.want)
+			}
+		})
+	}
+
+	// A site with no known line stays at zero rather than inventing one.
+	unknown := runSite{script: "one\ntwo\n"}
+	if got := unknown.lineAt(4); got != 0 {
+		t.Errorf("lineAt with no runLine = %d, want 0", got)
+	}
+}
