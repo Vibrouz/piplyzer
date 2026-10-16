@@ -1,0 +1,17 @@
+# Rule 7 (PPE-007): on: push with no ref or path filter.
+#
+# The GhostAction entry point: a stolen maintainer token pushes a malicious
+# workflow to the default branch, no pull request, no review.
+#
+# Expected: 1 finding, PPE-007, Warn. Not Block, because an unfiltered push is
+# legitimate in a great many repositories and a gate that blocks on it gets
+# switched off.
+on:
+  push:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm ci
+      - run: npm test

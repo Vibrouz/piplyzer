@@ -8,6 +8,20 @@ import (
 	"github.com/Vibrouz/whoa/internal/parse"
 )
 
+// This file holds the PPE rules, in rule number order, which is the order
+// plan.md lists them in. One file rather than one per rule: the rules are
+// independent by design and a reader looking for one wants to see it next to
+// its neighbours, not hunt through a directory of small files. What earns a
+// separate file is not "a rule" but "something that is not a pure function over
+// one parsed workflow", and none of these are.
+//
+// Every rule is func(*parse.File) findings.Findings. None of them call each
+// other, none of them touch I/O, and none of them keep state.
+
+// ---------------------------------------------------------------- rule 1
+
+// Rule 1: uses: pinned to something mutable instead of a commit SHA.
+
 // Rule1ID is the rule identifier for rule 1.
 const Rule1ID = "PPE-001"
 
@@ -90,4 +104,43 @@ func refKind(ref string) string {
 	default:
 		return "a branch or other mutable reference"
 	}
+}
+
+// ---------------------------------------------------------------- rule 7
+
+// Rule 7: on: push with no ref or path filter.
+
+// Rule7ID is the rule identifier for rule 7.
+const Rule7ID = "PPE-007"
+
+// Rule7 reports a workflow that runs on every push to any branch.
+//
+// Warn, because an unfiltered push is extremely common and legitimate: many
+// repositories deliberately build every branch. Blocking it would be noise, and
+// a noisy gate gets disabled, which costs us the rules that matter.
+//
+// It is one of the five components of the GhostAction fingerprint composite
+// (rules 4 through 8). It cannot trigger that composite on its own, because it
+// fires on far too many real workflows to mean anything by itself.
+func Rule7(file *parse.File) findings.Findings {
+	push, ok := file.Triggers.Spec("push")
+	if !ok || !push.Unfiltered() {
+		return nil
+	}
+	return findings.Findings{
+		findings.New(Rule7ID, findings.SeverityWarn, rule7Message(), findings.At(file.Path, push.Line)),
+	}
+}
+
+func rule7Message() string {
+	// No incident figure is quoted here on purpose. plan.md still has the
+	// GhostAction counts marked vendor-sourced pending confirmation, and
+	// decisions.md requires a source for any figure that reaches a user. The
+	// mechanism is what matters here and it is not in doubt: a stolen maintainer
+	// token pushes to the default branch and the workflow runs.
+	return "on: push has no branches, tags or paths filter, so this workflow runs for every commit that " +
+		"lands on any branch in the repository. That is the entry point for a compromised maintainer " +
+		"account: the attacker pushes a malicious workflow straight to the default branch, there is no " +
+		"pull request and no review, and it runs with the repository's secrets. Restrict it to the " +
+		"branches you build from, and put anything that should be deliberate behind workflow_dispatch."
 }

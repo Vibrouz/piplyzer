@@ -127,6 +127,41 @@ func TestTriggerFormsAreEquivalent(t *testing.T) {
 	}
 }
 
+// Unfiltered decides whether rule 7 fires, so every filter shape has a case.
+// A workflow has one on: block, which is why these are inline rather than
+// fixtures.
+func TestTriggerSpecUnfiltered(t *testing.T) {
+	tests := []struct {
+		name       string
+		on         string
+		unfiltered bool
+	}{
+		{"no filters", "on:\n  push:", true},
+		{"branches", "on:\n  push:\n    branches: [main]", false},
+		{"branches-ignore", "on:\n  push:\n    branches-ignore: ['wip/**']", false},
+		{"tags", "on:\n  push:\n    tags: ['v*']", false},
+		{"tags-ignore", "on:\n  push:\n    tags-ignore: ['n/**']", false},
+		{"paths", "on:\n  push:\n    paths: ['src/**']", false},
+		{"paths-ignore", "on:\n  push:\n    paths-ignore: ['docs/**']", false},
+		{"empty branches list filters nothing", "on:\n  push:\n    branches: []", true},
+		{"a types filter is not a ref filter", "on:\n  pull_request_target:\n    types: [opened]", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := parse.Parse([]byte(tt.on + "\n"))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			for _, spec := range file.Triggers.Specs {
+				if got := spec.Unfiltered(); got != tt.unfiltered {
+					t.Errorf("%s.Unfiltered() = %v, want %v", spec.Event, got, tt.unfiltered)
+				}
+			}
+		})
+	}
+}
+
 func TestTriggersAbsent(t *testing.T) {
 	file, err := parse.Parse([]byte("jobs:\n  build:\n    steps:\n      - run: echo hi\n"))
 	if err != nil {

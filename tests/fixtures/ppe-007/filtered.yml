@@ -1,0 +1,18 @@
+# Rule 7 (PPE-007) negative case.
+#
+# Expected: no findings.
+#
+# A rule with only a positive fixture passes whether or not it works. The other
+# filter shapes (tags, paths, branches-ignore) are covered in ppe_test.go
+# rather than here: a workflow file has exactly one on: block, so each shape
+# needs its own file, and this is the one build_plan.md names.
+on:
+  push:
+    branches: [main, 'release/**']
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm ci
+      - run: npm test

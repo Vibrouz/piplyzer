@@ -27,6 +27,7 @@ type Rule func(*parse.File) findings.Findings
 // happen to exist yet.
 var checks = []Rule{
 	Rule1,
+	Rule7,
 }
 
 // Engine runs the rules against a workflow.
