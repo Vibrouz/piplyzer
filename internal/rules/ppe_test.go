@@ -532,10 +532,16 @@ func TestRule8SensitivityShapes(t *testing.T) {
 			reasoning: "reads it",
 		},
 		{
-			name:      "github.token",
+			name:      "github.token alone",
 			src:       dispatch + "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: gh api\n        env:\n          GH_TOKEN: ${{ github.token }}\n",
-			fired:     true,
-			reasoning: "plan.md counts any github.token reference as sensitive, and ordinary API workflows do this",
+			fired:     false,
+			reasoning: "the workflow token is not a repository secret, and rule 11 owns its permissions",
+		},
+		{
+			name:      "secrets.GITHUB_TOKEN alone",
+			src:       dispatch + "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: gh api\n        env:\n          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n",
+			fired:     false,
+			reasoning: "the same token under the other spelling",
 		},
 		{
 			name:      "id-token: write at job level",
@@ -610,6 +616,30 @@ func TestRule8SensitivityShapes(t *testing.T) {
 			reasoning: "setup-node does not put pull request code in the workspace",
 		},
 		{
+			name:      "token-reader, undeclared permissions",
+			src:       dispatch + "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: gh api\n        env:\n          GH_TOKEN: ${{ github.token }}\n",
+			fired:     false,
+			reasoning: "the workflow token is not a repository secret",
+		},
+		{
+			name:      "token-reader, read-all permissions",
+			src:       dispatch + "permissions: read-all\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: gh api\n        env:\n          GH_TOKEN: ${{ github.token }}\n",
+			fired:     false,
+			reasoning: "read-all does not include id-token, so the token alone leaves it clean",
+		},
+		{
+			name:      "token-reader, write-all permissions",
+			src:       dispatch + "permissions: write-all\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: gh api\n        env:\n          GH_TOKEN: ${{ github.token }}\n",
+			fired:     true,
+			reasoning: "write-all covers every scope including id-token, so this is sensitive as an OIDC job, not because of the token",
+		},
+		{
+			name:      "the workflow token must not mask a real secret in the same string",
+			src:       dispatch + "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo \u0024{{ secrets.GITHUB_TOKEN }} \u0024{{ secrets.DEPLOY_TOKEN }}\n",
+			fired:     true,
+			reasoning: "skipping the token has to keep scanning, not stop",
+		},
+		{
 			name:      "nothing sensitive at all",
 			src:       dispatch + plain,
 			fired:     false,
@@ -657,7 +687,7 @@ func TestRule8NeedsTheDispatchTrigger(t *testing.T) {
 // Every part of a job can hide a secret reference. A check that skips one of
 // them is a job that walks through.
 func TestSensitiveJobLooksEverywhere(t *testing.T) {
-	tokens := []string{"secrets.TOKEN", "github.token"}
+	tokens := []string{"secrets.DEPLOY_TOKEN"}
 	places := []string{
 		"jobs:\n  a:\n    runs-on: ubuntu-latest\n    env:\n      V: %s\n    steps:\n      - run: echo hi\n",
 		"jobs:\n  a:\n    runs-on: ubuntu-latest\n    if: \"${{ %s }}\"\n    steps:\n      - run: echo hi\n",

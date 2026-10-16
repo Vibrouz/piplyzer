@@ -41,6 +41,17 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::123456789012:role/deploy
 
+  # A job that uses the workflow token is not sensitive. github.token and
+  # secrets.GITHUB_TOKEN are the same credential and it is available in every
+  # job, so referencing it does not make a job sensitive. Rule 11 owns the
+  # token question.
+  token-reader:
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh api repos/${{ github.repository }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   # No credentials anywhere. Dispatch on this one is a normal convenience.
   build:
     runs-on: ubuntu-latest

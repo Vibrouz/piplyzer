@@ -12,6 +12,11 @@
 #
 # Three notes on the fixture that are decisions, not accidents:
 #
+# - A job that references the workflow token is not sensitive. `github.token` and
+#   `secrets.GITHUB_TOKEN` are the same credential and it is available in every
+#   job, so referencing it does not make a job sensitive in the sense rule 8
+#   means. Rule 11 owns the token question. `token-reader` is deliberately in
+#   this fixture to pin that.
 # - Job level `permissions:` **replaces** the workflow level block rather than
 #   merging with it. `dispatch-sensitive.yml` has `read-all` at the workflow
 #   level so that `build` and `docs` are clean, and `oidc` sensitive because of

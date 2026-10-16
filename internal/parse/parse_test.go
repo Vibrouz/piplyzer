@@ -242,6 +242,58 @@ func TestJobSecretsErrors(t *testing.T) {
 	}
 }
 
+// Grants is load bearing for rules 8 and 11, and write-all reaching id-token
+// is the kind of fact that is easy to assume the other way round. id-token only
+// offers write or none, so a write-all block does include it, and a read-all
+// block does not.
+func TestPermissionsGrantsAcrossScopes(t *testing.T) {
+	tests := []struct {
+		name  string
+		perms string
+		want  map[string]bool
+	}{
+		{
+			name:  "write-all covers everything, id-token included",
+			perms: "permissions: write-all\n",
+			want:  map[string]bool{"contents": true, "id-token": true, "packages": true},
+		},
+		{
+			name:  "read-all covers nothing at write level",
+			perms: "permissions: read-all\n",
+			want:  map[string]bool{"contents": false, "id-token": false, "packages": false},
+		},
+		{
+			name:  "an explicit map grants only what it lists",
+			perms: "permissions:\n  contents: read\n  id-token: write\n",
+			want:  map[string]bool{"contents": false, "id-token": true, "packages": false},
+		},
+		{
+			name:  "an empty block grants nothing",
+			perms: "permissions: {}\n",
+			want:  map[string]bool{"contents": false, "id-token": false, "packages": false},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := tt.perms + "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+			file, err := parse.Parse([]byte(src))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			perms, ok := file.PermissionsFor("a")
+			if !ok {
+				t.Fatal("PermissionsFor found no block")
+			}
+			for scope, want := range tt.want {
+				if got := perms.Grants(scope); got != want {
+					t.Errorf("Grants(%q) = %v, want %v (scope %q, level %q)", scope, got, want, perms.Scope, perms.Level)
+				}
+			}
+		})
+	}
+}
+
 func TestTriggersAbsent(t *testing.T) {
 	file, err := parse.Parse([]byte("jobs:\n  build:\n    steps:\n      - run: echo hi\n"))
 	if err != nil {

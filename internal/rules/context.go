@@ -29,9 +29,16 @@ func isPREvent(file *parse.File) bool {
 // sensitiveJob reports whether a job can reach credentials.
 //
 // Rules 8 and 11 both need this and would drift if each defined it. A job is
-// sensitive when it references secrets.* or github.token, declares id-token:
-// write, receives secrets through its own secrets: block, or checks out code on
-// a pull request event.
+// sensitive when it references a repository secret, declares id-token: write,
+// receives secrets through its own secrets: block, or checks out code on a pull
+// request event.
+//
+// The workflow token is deliberately not part of this. github.token and
+// secrets.GITHUB_TOKEN are the same credential and are available in every job,
+// so a reference to it does not make a job sensitive in the sense these rules
+// mean: the harm they target is a credential the attacker would not otherwise
+// have. The workflow token is owned by rule 11, which has the permissions
+// context to say whether it is over-privileged.
 //
 // The reasons are returned as a string so the finding can say which one applied.
 // A job that trips three of them should not produce a message implying it
@@ -40,8 +47,8 @@ func sensitiveJob(file *parse.File, job parse.Job) (bool, string) {
 	if job.Secrets.Declared {
 		return true, "it receives secrets through its secrets: block"
 	}
-	if jobReferencesSecrets(job) {
-		return true, "it references secrets.* or github.token"
+	if jobReferencesRealSecret(job) {
+		return true, "it references a repository secret"
 	}
 	if permissions, ok := file.PermissionsFor(job.ID); ok && permissions.Grants("id-token") {
 		return true, "id-token: write lets it mint a cloud credential"
@@ -52,46 +59,66 @@ func sensitiveJob(file *parse.File, job parse.Job) (bool, string) {
 	return false, ""
 }
 
-// secretExpressionMarkers are the two context prefixes that hand a job a
-// credential. The expressions look like ${{ secrets.NAME }} and
-// ${{ github.token }}, so a substring test on the prefix is the whole match.
-var secretExpressionMarkers = []string{"secrets.", "github.token"}
-
-// jobReferencesSecrets reports whether any part of the job mentions a secret.
+// jobReferencesRealSecret reports whether any part of the job mentions a
+// repository secret. The workflow token is excluded on purpose: it is the same
+// credential in every job and is owned by rule 11.
 //
 // Every place a job can carry an expression is checked: its own env, with, if
 // and secrets, and the same on each step. A workflow that hides the reference
 // in one place we do not look is a workflow that gets skipped.
-func jobReferencesSecrets(job parse.Job) bool {
-	if valuesMentionSecrets(job.Env) || valuesMentionSecrets(job.With) ||
-		valuesMentionSecrets(job.Secrets.Values) || mentionsSecret(job.If) {
+func jobReferencesRealSecret(job parse.Job) bool {
+	if valuesMentionRealSecret(job.Env) || valuesMentionRealSecret(job.With) ||
+		valuesMentionRealSecret(job.Secrets.Values) || mentionsRealSecret(job.If) {
 		return true
 	}
 	for _, step := range job.Steps {
-		if mentionsSecret(step.Run) || mentionsSecret(step.If) ||
-			valuesMentionSecrets(step.With) || valuesMentionSecrets(step.Env) {
+		if mentionsRealSecret(step.Run) || mentionsRealSecret(step.If) ||
+			valuesMentionRealSecret(step.With) || valuesMentionRealSecret(step.Env) {
 			return true
 		}
 	}
 	return false
 }
 
-func valuesMentionSecrets(values parse.Values) bool {
+func valuesMentionRealSecret(values parse.Values) bool {
 	for _, entry := range values {
-		if mentionsSecret(entry.Text) {
+		if mentionsRealSecret(entry.Text) {
 			return true
 		}
 	}
 	return false
 }
 
-func mentionsSecret(text string) bool {
-	for _, marker := range secretExpressionMarkers {
-		if strings.Contains(text, marker) {
-			return true
+// mentionsRealSecret reports whether the text references a repository secret.
+// secrets.GITHUB_TOKEN is the workflow token and does not count.
+func mentionsRealSecret(text string) bool {
+	for _, marker := range []string{"secrets."} {
+		idx := 0
+		for {
+			pos := findSubstring(text, marker, idx)
+			if pos < 0 {
+				break
+			}
+			if !strings.HasPrefix(text[pos+len(marker):], "GITHUB_TOKEN") {
+				return true
+			}
+			idx = pos + len(marker)
 		}
 	}
 	return false
+}
+
+// findSubstring is strings.Index from an offset, kept here so the secret check
+// can keep scanning past a GITHUB_TOKEN reference.
+func findSubstring(s, sub string, from int) int {
+	if from >= len(s) {
+		return -1
+	}
+	i := strings.Index(s[from:], sub)
+	if i < 0 {
+		return -1
+	}
+	return from + i
 }
 
 // checkoutActions are the actions that put pull request code in the workspace.
