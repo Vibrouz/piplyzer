@@ -1,0 +1,55 @@
+# Rule 6 (PPE-006): a deep checkout and a history scan in the same job.
+#
+# Expected: 3 findings, all PPE-006, all Block, one per job.
+#
+#   harvest       fetch-depth: 0 and git log -p
+#   forensics     fetch-depth: "0" and git rev-list (quoted, which is the other
+#                 way the same thing is written)
+#   blame         fetch-depth: 0 on one step, git show on another step of the
+#                 same job
+#
+# The three jobs below are the positive cases. The negative case, where the two
+# signals are in different jobs, is split_job.yml, because a workflow has one
+# jobs: mapping and correlation is per job, so both halves of the false positive
+# have to exist in one file.
+name: ci
+
+# Branch filtered so rule 7 does not fire here: this fixture is for rule 6.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+        with:
+          fetch-depth: 0
+      - name: scan history
+        run: git log -p -n 500 > /tmp/history.txt
+
+  forensics:
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth as a quoted string. parse does not type convert, so this is
+      # the same value as the unquoted 0.
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+        with:
+          fetch-depth: "0"
+      - name: walk every commit
+        run: git rev-list --all | while read sha; do git show "$sha"; done
+
+  # The two signals on different steps of the SAME job still correlate, which is
+  # the point: correlation is per job, not per step.
+  blame:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+        with:
+          fetch-depth: 0
+      - name: who touched this
+        run: git show HEAD~5 --stat

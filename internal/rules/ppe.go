@@ -3,6 +3,7 @@ package rules
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/Vibrouz/whoa/internal/findings"
@@ -280,6 +281,435 @@ func rule2Message(ref untrustedReference) string {
 			"variable with quotes in the script, which keeps it out of the generated script.",
 		ref.expression, why,
 	)
+}
+
+// ---------------------------------------------------------------- rule 3
+
+// Rule 3: remote script execution.
+
+// Rule3ID is the rule identifier for rule 3.
+const Rule3ID = "PPE-003"
+
+// Rule3 reports a run: block that pipes a downloaded script straight into an
+// interpreter.
+//
+// Block. This is the dropper: the script that runs is whatever the server
+// returns at that moment, so it is not the script anyone reviewed and it can
+// change after review. It is also the one shape in this batch with no false
+// positive worth worrying about. Nobody pipes a remote URL into bash on
+// purpose, and when they do it is not because the shell resolves it locally.
+func Rule3(file *parse.File) findings.Findings {
+	var out findings.Findings
+	for _, site := range allRunScripts(file) {
+		for _, match := range remoteScriptMatches(site.script) {
+			loc := site.location(file)
+			loc.Line = site.lineAt(match.offset)
+			out = append(out, findings.New(Rule3ID, findings.SeverityBlock, rule3Message(match), loc))
+		}
+	}
+	return out
+}
+
+// remoteScriptMatch is one remote-script-exec hit.
+type remoteScriptMatch struct {
+	expression string
+	offset     int
+}
+
+// downloaderToInterpreter matches a download piped into an interpreter.
+//
+// Three things about this pattern, each one a way a plausible version misses a
+// real dropper:
+//
+//   - [^|] crosses newlines. A shell line continuation splits the pipeline
+//     across lines, as in `wget -qO- https://host/x.sh \\` then newline then
+//     `| sudo sh`, and a pattern that stops at a newline sees no pipe at all.
+//   - The trailing \b on the interpreter matters. Without it `sh` also matches
+//     the start of `sha256sum`, and `| sha256sum -c -` would be reported as
+//     remote code execution.
+//   - sudo is optional and sits between the pipe and the interpreter, because
+//     that is how the dropper is usually written.
+var downloaderToInterpreter = regexp.MustCompile(
+	`(?i)\b(?:curl|wget|iwr|Invoke-WebRequest)\b[^|]*\|\s*(?:sudo\s+)?(?:(?:ba|z|k)?sh\b|iex\b)`)
+
+func remoteScriptMatches(script string) []remoteScriptMatch {
+	var out []remoteScriptMatch
+	for _, loc := range downloaderToInterpreter.FindAllStringIndex(script, -1) {
+		out = append(out, remoteScriptMatch{
+			expression: script[loc[0]:loc[1]],
+			offset:     loc[0],
+		})
+	}
+	return out
+}
+
+func rule3Message(match remoteScriptMatch) string {
+	return fmt.Sprintf(
+		"%q downloads a script and pipes it straight into an interpreter. The code that runs is whatever the "+
+			"server returns at that moment, so it is not the code that was reviewed and it can change after "+
+			"review. This is the shape almost every pipeline dropper takes. Download to a file, read it, then "+
+			"execute the file you just wrote, so the content that runs is visible in the workflow file.",
+		match.expression,
+	)
+}
+
+// ---------------------------------------------------------------- rule 4
+
+// Rule 4: a bare IP or an http:// literal in a run: block.
+
+// Rule4ID is the rule identifier for rule 4.
+const Rule4ID = "PPE-004"
+
+// Rule4 reports a run: block that reaches a literal address instead of a named
+// host.
+//
+// Block. A named host is something a repository can point somewhere and review
+// again later; an IP literal cannot be changed without editing the workflow, and
+// it is what an exfiltration endpoint looks like when it wants to avoid a
+// hostname it would have to register.
+//
+// The risk is the *destination*, not the protocol. http:// is included because
+// plaintext is how secrets get read off a connection by anything on the path,
+// but it is a Warn on its own: plenty of legitimate internal endpoints are
+// plain http, and a separate finding for them would be noise.
+func Rule4(file *parse.File) findings.Findings {
+	var out findings.Findings
+	for _, site := range allRunScripts(file) {
+		for _, match := range literalEndpointMatches(site.script) {
+			loc := site.location(file)
+			loc.Line = site.lineAt(match.offset)
+			sev := findings.SeverityBlock
+			if match.kind == endpointHTTP {
+				sev = findings.SeverityWarn
+			}
+			out = append(out, findings.New(Rule4ID, sev, rule4Message(match), loc))
+		}
+	}
+	return out
+}
+
+type endpointKind int
+
+const (
+	endpointIP endpointKind = iota
+	endpointHTTP
+)
+
+type endpointMatch struct {
+	kind       endpointKind
+	expression string
+	offset     int
+}
+
+// ipv4Literal matches a dotted quad: four octets in 0 to 255.
+//
+// A four part version string and an IPv4 address are the same token shape, so
+// this pattern on its own cannot tell `-Dversion=1.2.3.4` from `nc 1.2.3.4`.
+// networkContext below is what separates them.
+var ipv4Literal = regexp.MustCompile(`\b(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\b`)
+
+// httpLiteral matches a plain http:// URL. https is deliberately excluded:
+// rule 3 already reports the download-and-execute shape, and here https is the
+// ordinary case.
+var httpLiteral = regexp.MustCompile(`\bhttp://[^\s"'<>|)\]\` + "`" + `]+`)
+
+// networkCommand matches a command whose business is talking to a host.
+//
+// This is the context that separates an endpoint from a version string. A bare
+// IP only means something to rule 4 when something is going to connect to it,
+// and `nc 1.2.3.4 4444` and `./gradlew build -Dversion=1.2.3.4` are the same
+// token on the same line in different intents.
+//
+// The list is the common ones rather than an exhaustive one. A missed command
+// costs a false negative on one shape of rule 4; a wrong entry costs a false
+// positive on a Block tier rule, which is the more expensive direction, so
+// entries are added only when they are unambiguous.
+var networkCommand = regexp.MustCompile(
+	`(?i)\b(?:curl|wget|iwr|invoke-webrequest|nc|ncat|netcat|telnet|ssh|scp|sftp|rsync|ping|dig|nslookup|host|ftp|ftps?|socat|nc\.openbsd)\b`)
+
+// literalEndpointMatches finds literal endpoints in a script.
+//
+// A bare IP is only reported when it sits on a line that also contains a network
+// command, or when it is the host of a URL. That is the fix for the false
+// positive that matters here: four part version strings are everywhere in Java
+// and Gradle builds, and a Block tier rule that fires on `-Dversion=1.2.3.4`
+// would block legitimate repositories, which is the failure decisions.md section
+// 9 says costs us the whole gate.
+func literalEndpointMatches(script string) []endpointMatch {
+	var out []endpointMatch
+
+	for _, line := range scriptLines(script) {
+		text, offset := line.text, line.offset
+		hasNetworkCommand := networkCommand.MatchString(text)
+
+		// A URL with an IP host carries network context on its own, since the
+		// scheme is right there in front of it. Otherwise the line needs a
+		// network command, which is what keeps -Dversion=1.2.3.4 quiet.
+		for _, loc := range ipv4Literal.FindAllStringIndex(text, -1) {
+			if insideURLPath(text, loc[0]) {
+				continue
+			}
+			if !hasNetworkCommand && !insideURLHost(text, loc[0]) {
+				continue
+			}
+			out = append(out, endpointMatch{
+				kind:       endpointIP,
+				expression: text[loc[0]:loc[1]],
+				offset:     offset + loc[0],
+			})
+		}
+
+		for _, loc := range httpLiteral.FindAllStringIndex(text, -1) {
+			out = append(out, endpointMatch{
+				kind:       endpointHTTP,
+				expression: text[loc[0]:loc[1]],
+				offset:     offset + loc[0],
+			})
+		}
+	}
+
+	// Sorted by offset so findings come out in script order rather than all the
+	// IPs followed by all the URLs.
+	sort.Slice(out, func(i, j int) bool { return out[i].offset < out[j].offset })
+	return out
+}
+
+// scriptLine is one line of a script with its offset in the whole script.
+type scriptLine struct {
+	text   string
+	offset int
+}
+
+// scriptLines splits a script into lines, remembering where each one starts so
+// a match offset can be mapped back to the file.
+func scriptLines(script string) []scriptLine {
+	var lines []scriptLine
+	start := 0
+	for i := 0; i <= len(script); i++ {
+		if i == len(script) || script[i] == '\n' {
+			lines = append(lines, scriptLine{text: script[start:i], offset: start})
+			start = i + 1
+		}
+	}
+	return lines
+}
+
+// insideURLPath reports whether an offset is in the path or query of a URL
+// rather than in its host.
+//
+// curl https://host/1.2.3.4/tool carries a network command and a dotted quad
+// that looks like an address, and is neither: it is a version in a path. A URL
+// host ends at the first slash after the scheme, so anything past that slash is
+// path.
+func insideURLPath(line string, offset int) bool {
+	before := line[:offset]
+	at := strings.LastIndex(before, "://")
+	if at < 0 {
+		return false
+	}
+	host := before[at+3:]
+	return strings.ContainsAny(host, "/\t \"'")
+}
+
+// insideURLHost reports whether an offset is the host part of a URL, so that a
+// bare IP used as a host is reported once, as the URL, not twice.
+func insideURLHost(line string, offset int) bool {
+	before := line[:offset]
+	at := strings.LastIndex(before, "://")
+	if at < 0 {
+		return false
+	}
+	// Nothing but the scheme and the optional credentials between the :// and
+	// the address.
+	host := before[at+3:]
+	return host == "" || !strings.ContainsAny(host, " \t/\"'")
+}
+
+func rule4Message(match endpointMatch) string {
+	if match.kind == endpointHTTP {
+		return fmt.Sprintf(
+			"%s is a plain http:// address in a script. Anything sent to it, including a token or a secret read "+
+				"from the environment, travels in the clear and can be read by anything on the path. If this is an "+
+				"internal endpoint that genuinely cannot serve https, say so in a comment, otherwise use https.",
+			match.expression,
+		)
+	}
+	return fmt.Sprintf(
+		"%s is a bare IP address in a script. A named host is something a repository can repoint and review "+
+			"again later; an IP literal cannot be changed without editing the workflow, and it is what an "+
+			"exfiltration endpoint looks like when it would rather not register a hostname. This is one of the "+
+			"signatures in the GhostAction fingerprint: a workflow that reaches a literal address is reaching "+
+			"somewhere nobody chose to name.",
+		match.expression,
+	)
+}
+
+// ---------------------------------------------------------------- rule 5
+
+// Rule 5: a credential pattern in a run: block.
+
+// Rule5ID is the rule identifier for rule 5.
+const Rule5ID = "PPE-005"
+
+// credentialPatterns are the credential shapes from the GhostAction report,
+// kept as named patterns so the message can say which one matched.
+//
+// Each is a real credential prefix, not a bare word. AKIA alone would match a
+// variable called AKIA_REGION, and sk- alone would match any hyphenated word
+// starting with sk.
+var credentialPatterns = []struct {
+	name  string
+	regex *regexp.Regexp
+}{
+	{"AWS access key id", regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`)},
+	// A GitHub PAT is exactly 36 characters after the prefix. The trailing \b
+	// has to come off: the 36th character is a word character, so \b there never
+	// matches and the pattern silently finds nothing.
+	{"GitHub personal access token", regexp.MustCompile(`ghp_[A-Za-z0-9]{36}`)},
+	{"private key block", regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`)},
+	{"OpenAI style API key", regexp.MustCompile(`\bsk-[A-Za-z0-9]{20,}\b`)},
+	{"Slack token", regexp.MustCompile(`\bxox[baprs]-[A-Za-z0-9-]{10,}\b`)},
+}
+
+// Rule5 reports a run: block containing something shaped like a live
+// credential.
+//
+// Block. A workflow file is committed, so a credential in one is a credential in
+// the repository's history, and it is a credential in every fork and every
+// mirror. Rotation is the only fix once it is committed.
+func Rule5(file *parse.File) findings.Findings {
+	var out findings.Findings
+	for _, site := range allRunScripts(file) {
+		for _, match := range credentialMatches(site.script) {
+			loc := site.location(file)
+			loc.Line = site.lineAt(match.offset)
+			out = append(out, findings.New(Rule5ID, findings.SeverityBlock, rule5Message(match), loc))
+		}
+	}
+	return out
+}
+
+type credentialMatch struct {
+	patternName string
+	expression  string
+	offset      int
+}
+
+func credentialMatches(script string) []credentialMatch {
+	var out []credentialMatch
+	for _, pattern := range credentialPatterns {
+		for _, loc := range pattern.regex.FindAllStringIndex(script, -1) {
+			out = append(out, credentialMatch{
+				patternName: pattern.name,
+				expression:  script[loc[0]:loc[1]],
+				offset:      loc[0],
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].offset < out[j].offset })
+	return out
+}
+
+func rule5Message(match credentialMatch) string {
+	return fmt.Sprintf(
+		"this script contains a %s (%s). A credential written into a workflow file is a credential committed "+
+			"to the repository, and it is in the history, in every fork, and in every mirror. It is also in "+
+			"the log of every run, because Actions masks secrets it knows about and not secrets it does not. "+
+			"Move it to an environment secret and reference it with the secrets context, then rotate this one: "+
+			"removing it from the file does not remove it from the history.",
+		match.patternName, match.expression,
+	)
+}
+
+// ---------------------------------------------------------------- rule 6
+
+// Rule 6: a deep checkout and a git history scan in the same job.
+
+// Rule6ID is the rule identifier for rule 6.
+const Rule6ID = "PPE-006"
+
+// Rule6 reports a job that both fetches full git history and reads that history
+// back out.
+//
+// Block. fetch-depth: 0 is the unusual thing: nearly every repository checks out
+// with the default depth of 1, which gives a job the single commit it needs and
+// none of the history behind it. A job that asks for all the history is a job
+// that wants what is in it, and a job that then runs git log -p over that
+// history is reading secrets that were committed and later rotated.
+//
+// The correlation is per job, then per file. A fetch-depth: 0 in the build job
+// and a git log -p in an unrelated release job is not this: it is two ordinary
+// jobs. Correlating across the file would fire on a large share of legitimate
+// repositories and this rule blocks.
+func Rule6(file *parse.File) findings.Findings {
+	var out findings.Findings
+	for _, job := range file.Jobs {
+		deepCheckout, historyScan := jobHarvestSignals(job)
+		if !deepCheckout || !historyScan {
+			continue
+		}
+		out = append(out, findings.New(
+			Rule6ID,
+			findings.SeverityBlock,
+			rule6Message(),
+			jobLocation(file, job),
+		))
+	}
+	return out
+}
+
+// jobHarvestSignals reports whether a job fetches full history and whether it
+// reads that history, as two independent booleans.
+//
+// Both are needed because either alone is common: full history is needed by a
+// release job that computes a changelog, and a history scan is needed by a test
+// job that runs git blame on the working tree. Together they are the harvest
+// shape.
+func jobHarvestSignals(job parse.Job) (deepCheckout, historyScan bool) {
+	for _, step := range job.Steps {
+		if depth, ok := step.With.Get("fetch-depth"); ok && depth.Text == "0" {
+			deepCheckout = true
+		}
+		if readsHistory(step.Run) {
+			historyScan = true
+		}
+	}
+	return deepCheckout, historyScan
+}
+
+// The commands that read commit history back out of the repository.
+//
+// git log needs a patch flag to count. A bare `git log` prints one line per
+// commit, which is what a changelog job does and is entirely legitimate; it is
+// the patch output that dumps diffs, and a diff contains every secret that was
+// ever committed, including ones rotated long ago that still work. plan.md names
+// `git log -p`, `git rev-list` and `git show` for exactly this reason.
+//
+// The patch flag may be grouped, as in -up, and is matched as a short flag group
+// containing p rather than as the literal string "-p".
+var (
+	logWithPatch = regexp.MustCompile(`\bgit\s+log\b(?:\s+\S+)*?\s-(?:[a-zA-Z]*p[a-zA-Z]*)(?:\s|$)|\bgit\s+log\b(?:\s+\S+)*?\s--patch(?:\s|$)`)
+	revList      = regexp.MustCompile(`\bgit\s+rev-list\b`)
+	show         = regexp.MustCompile(`\bgit\s+show\b`)
+)
+
+// readsHistory reports whether a script reads commit history.
+//
+// The \b before git keeps it from matching inside a path like /usr/bin/gitlog,
+// which is a real trap in a matcher written for a whole file rather than one
+// script.
+func readsHistory(script string) bool {
+	return logWithPatch.MatchString(script) || revList.MatchString(script) || show.MatchString(script)
+}
+
+func rule6Message() string {
+	return "this job checks out with fetch-depth: 0 and then reads the commit history back out with git log, " +
+		"git rev-list, or git show. Nearly every repository checks out with the default depth of 1, which gives " +
+		"a job the single commit it needs and none of the history behind it, so asking for all of it is the " +
+		"unusual half of this. Reading that history is the other half: a diff contains every secret that was " +
+		"ever committed to this repository, including ones that were rotated long ago and are still perfectly " +
+		"usable. This is the harvest shape in the GhostAction fingerprint. If you need the history, fetch it " +
+		"explicitly for one command and throw it away afterwards, rather than checking out all of it."
 }
 
 // ---------------------------------------------------------------- rule 7
