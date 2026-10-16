@@ -26,6 +26,11 @@ type UsesRef struct {
 // The split is on the last @, because a ref may contain slashes (release/v1)
 // while a subpath may not contain @. Splitting on the first @ instead would
 // report a branch name as part of the path.
+//
+// A local action and a container action both report an empty ref, even when the
+// text contains an @. That is deliberate: it lets a check about pinning skip
+// both shapes without needing a case for either, because neither has a remote
+// ref that could be repointed.
 func (u UsesRef) Parts() (repo, subpath, ref string) {
 	target := strings.TrimSpace(u.Target)
 
