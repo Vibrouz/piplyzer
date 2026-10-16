@@ -146,6 +146,53 @@ func jobChecksOutCode(job parse.Job) bool {
 	return false
 }
 
+// runSite is one run: block in a workflow, with the place it was written.
+type runSite struct {
+	// script is the run value with block scalars already joined.
+	script string
+	// runLine is the first line of the script inside the file.
+	runLine int
+	jobID   string
+	step    parse.Step
+}
+
+// allRunScripts returns every run: block in the workflow, in document order.
+//
+// Rules 2, 3, 4, and 5 all match against the resolved script text rather than
+// the raw YAML lines, so they share this walk. Each rule owns what it matches;
+// this only hands them the script, the line to blame, and the step it belongs to.
+func allRunScripts(file *parse.File) []runSite {
+	var sites []runSite
+	for _, job := range file.Jobs {
+		for _, step := range job.Steps {
+			if step.Run == "" {
+				continue
+			}
+			sites = append(sites, runSite{
+				script:  step.Run,
+				runLine: step.RunLine,
+				jobID:   job.ID,
+				step:    step,
+			})
+		}
+	}
+	return sites
+}
+
+// location is where a finding about this script belongs.
+func (r runSite) location(file *parse.File) findings.Location {
+	return findings.AtStep(file.Path, r.runLine, r.jobID, r.step.Number, r.step.Name)
+}
+
+// lineAt maps a byte offset within the script back to a line in the file, so a
+// match partway through a block scalar points at the line the match is on.
+func (r runSite) lineAt(offset int) int {
+	if r.runLine == 0 || offset < 0 || offset > len(r.script) {
+		return r.runLine
+	}
+	return r.runLine + strings.Count(r.script[:offset], "\n")
+}
+
 // jobLocation is where a finding about a whole job belongs.
 func jobLocation(file *parse.File, job parse.Job) findings.Location {
 	loc := findings.At(file.Path, job.Line)

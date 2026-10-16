@@ -1,0 +1,67 @@
+# Rule 2 (PPE-002): untrusted context interpolated into a run: block.
+#
+# GitHub substitutes expressions into the script before the shell sees it, so a
+# pull request title containing a quote and a semicolon becomes commands rather
+# than text. A fork pull request is enough to try it.
+#
+# Expected: 7 findings, all PPE-002.
+#
+#   BLOCK  github.event.pull_request.title      Block tier, reachable by a fork PR
+#   BLOCK  github.event.pull_request.body       Block tier
+#   BLOCK  github.event.issue.title             Block tier
+#   BLOCK  github.event.comment.body            Block tier
+#   WARN   github.head_ref                      ref suffix, needs push access
+#   WARN   github.event.release.name            write gated: a release needs write
+#   WARN   github.event.milestone.title         write gated: a milestone needs write
+#
+# Two shapes that must NOT produce a finding, both in job safe: the env var
+# mitigation GitHub documents, where the value never enters the generated
+# script, and the workflow level env: block, which rule 2 does not scan at all.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  PR_BODY: ${{ github.event.pull_request.body }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # A block scalar, because that is how real scripts are written, and a
+      # line oriented matcher sees none of these.
+      - name: interpolated
+        run: |
+          title="${{ github.event.pull_request.title }}"
+          echo "PR: ${{ github.event.pull_request.body }}"
+          echo "issue: ${{ github.event.issue.title }}"
+          echo "comment: ${{ github.event.comment.body }}"
+          echo "branch: ${{ github.head_ref }}"
+
+  # release.name and milestone.title end in Block tier suffixes, but creating a
+  # release or a milestone already requires write access, so they are Warn
+  # rather than Block. decisions.md section 22.
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh release create v1 --notes "${{ github.event.release.name }}"
+      - run: gh issue create --title "${{ github.event.milestone.title }}"
+
+  # The mitigation GitHub documents: the value lives in an environment variable
+  # and is quoted in the script, so it is never substituted into the script
+  # text. Rule 2 scans run: blocks only, so neither this nor the workflow level
+  # env: above produces a finding.
+  safe:
+    runs-on: ubuntu-latest
+    env:
+      PR_TITLE: ${{ github.event.pull_request.title }}
+    steps:
+      - run: |
+          set -euo pipefail
+          echo "PR: $PR_TITLE"

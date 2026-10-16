@@ -3,6 +3,7 @@ package rules
 import (
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/Vibrouz/whoa/internal/findings"
 	"github.com/Vibrouz/whoa/internal/parse"
@@ -104,6 +105,181 @@ func refKind(ref string) string {
 	default:
 		return "a branch or other mutable reference"
 	}
+}
+
+// ---------------------------------------------------------------- rule 2
+
+// Rule 2: untrusted context interpolated into a run: block.
+
+// Rule2ID is the rule identifier for rule 2.
+const Rule2ID = "PPE-002"
+
+// untrustedSuffixes is GitHub's published list of context properties an attacker
+// can put content into, verified verbatim against the script injection docs.
+//
+// Matching the suffix shape rather than enumerating full paths is deliberate: an
+// enumeration misses fields, and GitHub adds more events over time. The set is a
+// suffix set, not a path set, because `body` is untrusted whether it is reached
+// as github.event.issue.body or github.event.pull_request.body, and a rule that
+// knew only one of those would miss the other.
+var untrustedSuffixes = map[string]bool{
+	"body":           true,
+	"default_branch": true,
+	"email":          true,
+	"head_ref":       true,
+	"label":          true,
+	"message":        true,
+	"name":           true,
+	"page_name":      true,
+	"ref":            true,
+	"title":          true,
+}
+
+// blockTierSuffixes are the suffixes a fork pull request can reach with no
+// privileges at all, which is what makes them Block.
+var blockTierSuffixes = map[string]bool{
+	"title":   true,
+	"body":    true,
+	"message": true,
+	"email":   true,
+}
+
+// heldAtWarnSuffixes are Block tier in plan.md but ship as Warn until P2
+// measures their false positive rate against real repositories.
+//
+// `name` belongs in this tier. It is the widest of the ten suffixes, and
+// blocking on an unmeasured suffix is the one way this rule could cost us the
+// gate. It is named explicitly here rather than left to the Warn fallback, so
+// that deleting the entry visibly promotes it to Block and the change is caught
+// rather than silent. decisions.md section 22 records it and how to reverse it.
+var heldAtWarnSuffixes = map[string]bool{
+	"name": true,
+}
+
+// writeGatedContexts end in a Block tier suffix but cannot be reached by a fork
+// pull request, because creating a release, a milestone or a project already
+// requires write access. Reporting them as Block would be a false positive on
+// every repository that publishes releases. decisions.md section 22.
+var writeGatedContexts = map[string]bool{
+	"github.event.release.name":               true,
+	"github.event.milestone.title":            true,
+	"github.event.project.name":               true,
+	"github.event.workflow_run.display_title": true,
+}
+
+// githubContext matches a reference to the github context inside an expression,
+// capturing the dotted path that follows it.
+//
+// The path handles both shapes GitHub uses: github.head_ref, where the property
+// follows the context directly, and github.event.issue.title, where several
+// segments come first. plan.md writes this as
+// `github\.(event\.)?\w+[.\w]*\.(suffix)`, which requires a dot before the
+// suffix and so never matches github.head_ref or github.ref, the most common
+// ref-suffix references there are. The path is captured and its final segment
+// compared instead. The [n] alternation is for list contexts such as
+// github.event.commits[0].message and github.event.pages[0].page_name.
+// decisions.md section 22 records the regex bug.
+var githubContext = regexp.MustCompile(`github((?:\.[A-Za-z0-9_-]+|\[[0-9]+\])+)`)
+
+// Rule2 reports untrusted context interpolated into a run: block.
+//
+// GitHub substitutes expressions into the script before the shell sees it, so a
+// pull request title containing a quote and a semicolon becomes commands rather
+// than text. A fork pull request is enough to try it, which is why the freetext
+// suffixes block.
+//
+// Rule 2 reads run: blocks only, on purpose. A value in a step with: or in an
+// env: block is not shell text, and GitHub documents passing it through an
+// environment variable as the mitigation for this attack. Scanning env: would
+// flag the recommended fix.
+func Rule2(file *parse.File) findings.Findings {
+	var out findings.Findings
+	for _, site := range allRunScripts(file) {
+		for _, ref := range untrustedReferences(site.script) {
+			// The location is the line the match is on, not the line the run:
+			// key is on. In a block scalar those differ by however deep into
+			// the script the match sits, and a finding that always points at
+			// the top of the script is not actionable.
+			loc := site.location(file)
+			loc.Line = site.lineAt(ref.offset)
+			out = append(out, findings.New(Rule2ID, ref.severity, rule2Message(ref), loc))
+		}
+	}
+	return out
+}
+
+// untrustedReference is one untrusted context reference found in a script.
+type untrustedReference struct {
+	// expression is the full text as written, for the message.
+	expression string
+	// suffix is the final path segment, which is what the tier is decided by.
+	suffix string
+	// severity is resolved from the context and the suffix.
+	severity findings.Severity
+	// offset is where the expression starts in the script, so the finding can
+	// be placed on the line the match is actually on.
+	offset int
+}
+
+// untrustedReferences finds every untrusted context reference in a script.
+//
+// The suffix has to be the whole final segment. That is what keeps
+// github.event.pull_request.number from matching, and what keeps a path ending
+// in full_name from matching on `name`, so the segment is compared rather than
+// substring searched.
+func untrustedReferences(script string) []untrustedReference {
+	var out []untrustedReference
+	for _, loc := range githubContext.FindAllStringSubmatchIndex(script, -1) {
+		path := script[loc[2]:loc[3]]
+		suffix := path[strings.LastIndex(path, ".")+1:]
+		if !untrustedSuffixes[suffix] {
+			continue
+		}
+		expression := script[loc[0]:loc[1]]
+		out = append(out, untrustedReference{
+			expression: expression,
+			suffix:     suffix,
+			severity:   rule2Severity(expression, suffix),
+			offset:     loc[0],
+		})
+	}
+	return out
+}
+
+// rule2Severity decides the tier for one reference.
+//
+// The split is privilege, not safety. Both tiers are injectable; the difference
+// is who can reach the input. A pull request title needs nothing but the ability
+// to open a fork pull request. A ref needs push access to create the branch,
+// which is a higher bar but not a safe one, since GitHub documents branch names
+// as an injection vector in their own right.
+func rule2Severity(expression, suffix string) findings.Severity {
+	// Write gated first: it can demote a suffix that would otherwise block.
+	if writeGatedContexts[expression] {
+		return findings.SeverityWarn
+	}
+	if heldAtWarnSuffixes[suffix] {
+		return findings.SeverityWarn
+	}
+	if blockTierSuffixes[suffix] {
+		return findings.SeverityBlock
+	}
+	return findings.SeverityWarn
+}
+
+func rule2Message(ref untrustedReference) string {
+	why := "Anyone who can open a pull request on this repository controls this value, so the script below runs as them."
+	if ref.severity != findings.SeverityBlock {
+		why = "Creating the input for this needs push access, which is a higher bar than a fork pull request but is not " +
+			"safe: branch names and similar values can contain quotes and shell metacharacters."
+	}
+	return fmt.Sprintf(
+		"%s is untrusted input interpolated into a shell script. GitHub substitutes expressions into the script "+
+			"before the shell runs it, so a value containing a quote and a semicolon becomes commands rather than "+
+			"text. %s Pass the value through an environment variable instead: set it under env: and use the "+
+			"variable with quotes in the script, which keeps it out of the generated script.",
+		ref.expression, why,
+	)
 }
 
 // ---------------------------------------------------------------- rule 7

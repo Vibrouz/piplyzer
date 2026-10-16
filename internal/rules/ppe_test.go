@@ -412,6 +412,8 @@ func TestRulesRunThroughTheEngine(t *testing.T) {
 		{"ppe-007/filtered.yml", nil},
 		{"ppe-008/dispatch-sensitive.yml", []string{Rule8ID, Rule8ID, Rule8ID}},
 		{"ppe-008/dispatch-clean.yml", nil},
+		{"ppe-002/injected.yml", []string{Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID}},
+		{"ppe-002/safe.yml", nil},
 	}
 
 	for _, tt := range tests {
@@ -710,5 +712,257 @@ func TestSensitiveJobLooksEverywhere(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// ---------------------------------------------------------------- rule 2
+
+func TestRule2FlagsUntrustedContextInRunBlocks(t *testing.T) {
+	file, data := parseFixture(t, "ppe-002/injected.yml")
+
+	got := Rule2(file)
+
+	want := []want{
+		{Rule2ID, findings.SeverityBlock, lineOf(t, data, `title="${{ github.event.pull_request.title }}"`)},
+		{Rule2ID, findings.SeverityBlock, lineOf(t, data, `echo "PR: ${{ github.event.pull_request.body }}"`)},
+		{Rule2ID, findings.SeverityBlock, lineOf(t, data, `echo "issue: ${{ github.event.issue.title }}"`)},
+		{Rule2ID, findings.SeverityBlock, lineOf(t, data, `echo "comment: ${{ github.event.comment.body }}"`)},
+		{Rule2ID, findings.SeverityWarn, lineOf(t, data, `echo "branch: ${{ github.head_ref }}"`)},
+		{Rule2ID, findings.SeverityWarn, lineOf(t, data, `--notes "${{ github.event.release.name }}"`)},
+		{Rule2ID, findings.SeverityWarn, lineOf(t, data, `--title "${{ github.event.milestone.title }}"`)},
+	}
+	assertFindings(t, got, want)
+}
+
+func TestRule2DoesNotFireOnTheSafeShapes(t *testing.T) {
+	file, _ := parseFixture(t, "ppe-002/safe.yml")
+
+	if got := Rule2(file); len(got) != 0 {
+		for _, f := range got {
+			t.Errorf("unexpected finding on a safe workflow: %s at %s: %s", f.RuleID, f.Location, f.Message[:min(80, len(f.Message))])
+		}
+	}
+}
+
+// The plan.md pattern for this is github\.(event\.)?\w+[.\w]*\.(suffix), which
+// requires a dot before the suffix and so never matches github.head_ref or
+// github.ref. Those are the most common ref-suffix references there are, so this
+// pins that the matcher handles both shapes.
+func TestRule2MatchesBothContextShapes(t *testing.T) {
+	tests := []struct {
+		name       string
+		expression string
+		wantSuffix string
+		wantSev    findings.Severity
+	}{
+		{"property straight after the context", "github.head_ref", "head_ref", findings.SeverityWarn},
+		{"bare ref", "github.ref", "ref", findings.SeverityWarn},
+		{"bare name, held at Warn", "github.name", "name", findings.SeverityWarn},
+		{"event dotted path", "github.event.issue.title", "title", findings.SeverityBlock},
+		{"nested event path", "github.event.pull_request.head.ref", "ref", findings.SeverityWarn},
+		{"indexed list then suffix", "github.event.commits[0].message", "message", findings.SeverityBlock},
+		{"deep author path", "github.event.head_commit.author.email", "email", findings.SeverityBlock},
+		{"default branch", "github.event.repository.default_branch", "default_branch", findings.SeverityWarn},
+		{"label suffix", "github.event.pull_request.head.label", "label", findings.SeverityWarn},
+		{"page name", "github.event.pages[0].page_name", "page_name", findings.SeverityWarn},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			script := "echo " + tt.expression + "\n"
+			got := untrustedReferences(script)
+			if len(got) != 1 {
+				t.Fatalf("got %d matches for %s, want 1", len(got), tt.expression)
+			}
+			if got[0].suffix != tt.wantSuffix {
+				t.Errorf("suffix = %q, want %q", got[0].suffix, tt.wantSuffix)
+			}
+			if got[0].severity != tt.wantSev {
+				t.Errorf("severity = %q, want %q", got[0].severity, tt.wantSev)
+			}
+		})
+	}
+}
+
+// A suffix has to be the whole final segment. Substring comparison would match
+// number against nothing but would match full_name on name, and would match
+// username on name.
+func TestRule2MatchesWholeSegmentsOnly(t *testing.T) {
+	tests := []struct {
+		expression string
+		wantMatch  bool
+		reasoning  string
+	}{
+		{"github.event.pull_request.number", false, "numeric, and not in the suffix set"},
+		{"github.event.pull_request.head.repo.full_name", false, "full_name is not name"},
+		{"github.actor", false, "actor is not a suffix"},
+		{"github.repository", false, "repository is not a suffix"},
+		{"github.sha", false, "a hash, not a suffix"},
+		{"github.event.pull_request.head.ref.name", true, "the final segment is name, which is held at Warn"},
+		{"github.event.issue.labels[0].name", true, "name is the final segment"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.expression, func(t *testing.T) {
+			got := len(untrustedReferences("echo "+tt.expression+"\n")) > 0
+			if got != tt.wantMatch {
+				t.Errorf("matched = %v, want %v (%s)", got, tt.wantMatch, tt.reasoning)
+			}
+		})
+	}
+}
+
+// The suffix set is GitHub's, verified verbatim. A missing suffix is a silent
+// miss of a real attack surface, and an extra one is noise on every workflow
+// that mentions it.
+func TestUntrustedSuffixSet(t *testing.T) {
+	want := []string{
+		"body", "default_branch", "email", "head_ref", "label",
+		"message", "name", "page_name", "ref", "title",
+	}
+	if len(untrustedSuffixes) != len(want) {
+		t.Errorf("suffix set has %d entries, want %d (GitHub publishes exactly ten)", len(untrustedSuffixes), len(want))
+	}
+	for _, suffix := range want {
+		if !untrustedSuffixes[suffix] {
+			t.Errorf("suffix %q is missing from the set", suffix)
+		}
+	}
+	for suffix := range untrustedSuffixes {
+		if !contains(want, suffix) {
+			t.Errorf("suffix %q is in the set but is not one of GitHub's ten", suffix)
+		}
+	}
+}
+
+func contains(list []string, s string) bool {
+	for _, item := range list {
+		if item == s {
+			return true
+		}
+	}
+	return false
+}
+
+// plan.md puts name in the Block tier. It ships as Warn because it is the widest
+// of the ten and P2 has not measured it yet. This pins that decision so it
+// cannot be forgotten, and so promoting it later is a one line change.
+func TestNameSuffixIsHeldAtWarn(t *testing.T) {
+	if blockTierSuffixes["name"] {
+		t.Error("name is in the Block set: it is meant to be held at Warn until P2 measures it")
+	}
+	if got := rule2Severity("github.event.issue.title", "name"); got != findings.SeverityWarn {
+		t.Errorf("name severity = %q, want Warn: it is the widest suffix and ships held", got)
+	}
+	// Everything else in the Block tier still blocks.
+	for _, suffix := range []string{"title", "body", "message", "email"} {
+		if got := rule2Severity("github.event.x."+suffix, suffix); got != findings.SeverityBlock {
+			t.Errorf("%s severity = %q, want Block", suffix, got)
+		}
+	}
+}
+
+// A context that ends in a Block suffix but needs write access to create is not
+// reachable by a fork pull request, so it cannot be Block.
+func TestWriteGatedContextsAreDemoted(t *testing.T) {
+	for expression := range writeGatedContexts {
+		suffix := expression[strings.LastIndex(expression, ".")+1:]
+		got := rule2Severity(expression, suffix)
+		if got != findings.SeverityWarn {
+			t.Errorf("%s severity = %q, want Warn: creating it already needs write access", expression, got)
+		}
+	}
+	// The same suffix outside the write gated context still blocks, which is
+	// what makes this a context demotion rather than a suffix demotion.
+	if got := rule2Severity("github.event.pull_request.title", "title"); got != findings.SeverityBlock {
+		t.Errorf("pull_request.title severity = %q, want Block", got)
+	}
+}
+
+// Rule 2 is the only rule that blocks on a fork-reachable input, and it must
+// not block on the ref tier. A ref needs push access.
+func TestRule2WarnTierDoesNotBlock(t *testing.T) {
+	refs, _ := parseFixture(t, "ppe-002/injected.yml")
+	bySev := map[findings.Severity]int{}
+	for _, f := range Rule2(refs) {
+		bySev[f.Severity]++
+	}
+	if bySev[findings.SeverityBlock] != 4 {
+		t.Errorf("Block count = %d, want 4", bySev[findings.SeverityBlock])
+	}
+	if bySev[findings.SeverityWarn] != 3 {
+		t.Errorf("Warn count = %d, want 3", bySev[findings.SeverityWarn])
+	}
+
+	// A workflow whose only untrusted references are ref tier must not block.
+	warnOnly, err := parse.Parse([]byte(`jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "${{ github.head_ref }}"
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := Rule2(warnOnly); got.HasBlock() {
+		t.Error("a ref tier reference blocks: it needs push access to exploit")
+	}
+}
+
+// Rule 2 reads run: blocks only. A value in an env block or an action input is
+// not script text, and env is GitHub's documented mitigation.
+func TestRule2ReadsRunBlocksOnly(t *testing.T) {
+	file, err := parse.Parse([]byte(`jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      TITLE: ${{ github.event.pull_request.title }}
+    steps:
+      - uses: fakeaction/checktitle@0123456789abcdef0123456789abcdef01234567
+        with:
+          title: ${{ github.event.pull_request.title }}
+      - if: github.event.pull_request.title != ''
+        run: echo hi
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := Rule2(file); len(got) != 0 {
+		t.Errorf("got %d findings, want 0: env, with, and if are not script text", len(got))
+	}
+}
+
+// A match partway through a block scalar has to point at its own line, not at
+// the run: key, or every finding in a multi line script is unactionable.
+func TestRule2PointsAtTheMatchedLine(t *testing.T) {
+	file, data := parseFixture(t, "ppe-002/injected.yml")
+
+	got := Rule2(file)
+	if len(got) == 0 {
+		t.Fatal("no findings")
+	}
+
+	// Each finding must point at the line its own match is on, not at the run:
+	// key above the whole script. Every expression in the fixture is on a
+	// distinct line inside one block scalar, so the lines must be distinct too.
+	seen := map[int]bool{}
+	for _, f := range got {
+		if seen[f.Location.Line] {
+			t.Errorf("two findings on line %d: the location is not tracking the match", f.Location.Line)
+		}
+		seen[f.Location.Line] = true
+	}
+
+	// The first match is the title, the last is milestone.title, several lines
+	// further down in a different job.
+	first, last := got[0], got[len(got)-1]
+	if first.Location.Line >= last.Location.Line {
+		t.Errorf("first finding line %d is not before the last %d", first.Location.Line, last.Location.Line)
+	}
+	if first.Location.JobID != "build" || first.Location.StepNumber != 1 {
+		t.Errorf("first finding location = %+v, want job build step 1", first.Location)
+	}
+	if want := lineOf(t, data, `title="${{ github.event.pull_request.title }}"`); first.Location.Line != want {
+		t.Errorf("first finding line = %d, want %d", first.Location.Line, want)
 	}
 }

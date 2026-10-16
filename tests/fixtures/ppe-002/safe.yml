@@ -1,0 +1,54 @@
+# Rule 2 (PPE-002) negative case.
+#
+# Expected: no findings.
+#
+# Every shape that must not match, with the reason. A rule with only a positive
+# fixture passes whether or not it works, and this is the fixture that gives
+# injected.yml its meaning.
+#
+# The most important entry is `number`: a numeric field whose path does not end
+# in any of the ten suffixes. A matcher that did substring comparison instead of
+# segment comparison would match something here.
+name: ci
+
+on:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # Numeric fields. `number` is not an untrusted string, and neither is a
+      # bare index. The path segment has to equal a suffix, not contain one.
+      - run: echo "PR number ${{ github.event.pull_request.number }}"
+      - run: echo "count ${{ github.event.pull_request.commits[0].message.count }}"
+      - run: echo "sha ${{ github.sha }}"
+      - run: echo "repo ${{ github.repository }}"
+      - run: echo "actor ${{ github.actor }}"
+      - run: echo "run id ${{ github.run_id }}"
+
+      # The env var mitigation. The value is present in the workflow but never
+      # substituted into a script, so there is nothing to inject.
+      - name: safe via env
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          echo "PR: $PR_TITLE"
+          echo "body: $PR_BODY"
+
+      # The action-input mitigation. An action receives the value as an argument
+      # rather than as script text, so it is not a script injection.
+      - uses: fakeaction/checktitle@0123456789abcdef0123456789abcdef01234567
+        with:
+          title: ${{ github.event.pull_request.title }}
+
+      # Conditionals on a pull request event are normal and are not script.
+      - if: github.event.pull_request.draft == false
+        run: echo not a draft
+
+      # Expressions outside run: blocks. job level env and with are not scanned.
+      # (Rule 2 reads run: blocks only, on purpose: those are the places where a
+      # value becomes shell text.)
+      - run: echo "no expressions here at all"
