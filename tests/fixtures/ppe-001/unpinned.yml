@@ -1,0 +1,27 @@
+# Rule 1 (PPE-001): uses: pinned to a mutable ref.
+#
+# A mutable reference at all three locations, because a step-only walk misses
+# reusable workflow calls and those are the more dangerous case.
+#
+# Expected: 4 findings, all PPE-001, all Block.
+#   line 9   workflow level      main
+#   line 17  job level            release
+#   line 24  step 1               v4, a version tag
+#   line 28  step 2               main, a branch
+uses: example/ci/.github/workflows/reusable.yml@main
+
+jobs:
+  # Reusable workflow call in another repository, on a release branch.
+  call-reusable:
+    uses: other-org/infra/.github/workflows/build.yml@release
+    with:
+      target: staging
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # The shape most repositories have.
+      - uses: actions/checkout@v4
+
+      # A branch rather than a tag.
+      - uses: actions/setup-node@main

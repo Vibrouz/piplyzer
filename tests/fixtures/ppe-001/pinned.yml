@@ -1,0 +1,35 @@
+# Rule 1 (PPE-001) negative case.
+#
+# Expected: no findings.
+#
+# A rule with only a positive fixture passes whether or not it works, so this
+# is the fixture that gives the positive one its meaning. Every shape rule 1
+# deliberately does not flag is here, each with the reason it is excluded.
+uses: example/ci/.github/workflows/reusable.yml@1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d
+
+jobs:
+  # Reusable workflow call, pinned.
+  call-reusable:
+    uses: other-org/infra/.github/workflows/build.yml@5f3b1c0d4e8a9b2c7d6e5f4a3b2c1d0e9f8a7b6c
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned.
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+
+      # A local action. It cannot be repointed without changing this
+      # repository, so there is nothing to warn about.
+      - uses: ./.github/actions/build
+
+      # A container action: a different supply chain with different controls.
+      # Flagging it here would fire on a very common pattern for a risk rule 1
+      # does not cover.
+      - uses: docker://alpine:3.19
+
+      # No ref at all. This workflow does not run, which is a different problem
+      # from one that runs unreviewed code, and not this rule's problem.
+      - uses: some/action
+
+      # A run step, with no uses at all.
+      - run: echo done

@@ -1,0 +1,15 @@
+# Rule 1 (PPE-001): an abbreviated commit SHA is not a pin.
+#
+# GitHub will resolve actions/checkout@5f3b1c0 today, and can extend it to a
+# different commit tomorrow. Only the full 40 character name fixes the code.
+#
+# Expected: 2 findings, both PPE-001, both Block.
+#   line 8   step 1   7 hex characters
+#   line 11  step 2   12 hex characters
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@5f3b1c0
+
+      - uses: actions/cache@a1b2c3d4e5f6
