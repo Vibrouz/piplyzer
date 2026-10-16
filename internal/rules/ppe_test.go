@@ -2,6 +2,7 @@ package rules
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,6 +18,9 @@ import (
 // degrade into a partial check with nothing going red.
 
 const fixtureRoot = "../../tests/fixtures"
+
+// sha is a fabricated 40 character object name for inline test workflows.
+const sha = "0123456789abcdef0123456789abcdef01234567"
 
 func fixtureBytes(t *testing.T, name string) []byte {
 	t.Helper()
@@ -406,6 +410,8 @@ func TestRulesRunThroughTheEngine(t *testing.T) {
 		{"ppe-001/pinned.yml", nil},
 		{"ppe-007/unfiltered.yml", []string{Rule7ID}},
 		{"ppe-007/filtered.yml", nil},
+		{"ppe-008/dispatch-sensitive.yml", []string{Rule8ID, Rule8ID, Rule8ID}},
+		{"ppe-008/dispatch-clean.yml", nil},
 	}
 
 	for _, tt := range tests {
@@ -426,5 +432,253 @@ func TestRulesRunThroughTheEngine(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------- rule 8
+
+func TestRule8FlagsDispatchOnSensitiveJobs(t *testing.T) {
+	file, data := parseFixture(t, "ppe-008/dispatch-sensitive.yml")
+
+	got := Rule8(file)
+
+	assertFindings(t, got, []want{
+		{Rule8ID, findings.SeverityWarn, lineOf(t, data, "secrets-inherit:")},
+		{Rule8ID, findings.SeverityWarn, lineOf(t, data, "deploy-env:")},
+		{Rule8ID, findings.SeverityWarn, lineOf(t, data, "  oidc:")},
+	})
+	// The job has to be named, or a report points at a file with several jobs
+	// and no way to tell which one to fix.
+	for i, id := range []string{"secrets-inherit", "deploy-env", "oidc"} {
+		if got[i].Location.JobID != id {
+			t.Errorf("finding %d job = %q, want %q", i, got[i].Location.JobID, id)
+		}
+	}
+}
+
+func TestRule8DoesNotFireOnAnOrdinaryDispatchWorkflow(t *testing.T) {
+	file, _ := parseFixture(t, "ppe-008/dispatch-clean.yml")
+
+	if got := Rule8(file); len(got) != 0 {
+		for _, f := range got {
+			t.Errorf("unexpected finding on an ordinary dispatch workflow: %s at %s", f.RuleID, f.Location)
+		}
+	}
+}
+
+// Rule 8 is Warn, not Block. It fires on real deploy buttons, and a gate that
+// blocks on those gets disabled.
+func TestRule8WarnsAndDoesNotBlock(t *testing.T) {
+	file, _ := parseFixture(t, "ppe-008/dispatch-sensitive.yml")
+	if got := Rule8(file); got.HasBlock() {
+		t.Error("rule 8 blocks: workflow_dispatch with a privileged job is a normal pattern")
+	}
+}
+
+// Each way a job becomes sensitive, and each way it does not. The fixture
+// covers secrets: and a secret in env; the rest are inline because they differ
+// in one line each and a file per case would be a directory of near-identical
+// workflows.
+func TestRule8SensitivityShapes(t *testing.T) {
+	dispatch := "on:\n  workflow_dispatch:\n"
+	plain := "jobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+
+	tests := []struct {
+		name      string
+		src       string
+		fired     bool
+		reasoning string
+	}{
+		{
+			name:      "secrets: inherit",
+			src:       dispatch + "jobs:\n  a:\n    uses: o/r/.github/workflows/x.yml@" + sha + "\n    secrets: inherit\n",
+			fired:     true,
+			reasoning: "receives every secret the caller made available",
+		},
+		{
+			name:      "explicit secrets mapping",
+			src:       dispatch + "jobs:\n  a:\n    uses: o/r/.github/workflows/x.yml@" + sha + "\n    secrets:\n      token: ${{ secrets.T }}\n",
+			fired:     true,
+			reasoning: "same, written out",
+		},
+		{
+			name:      "empty secrets block is still declared",
+			src:       dispatch + "jobs:\n  a:\n    uses: o/r/.github/workflows/x.yml@" + sha + "\n    secrets:\n",
+			fired:     true,
+			reasoning: "a secrets: key is a chance to hold credentials",
+		},
+		{
+			name:      "secret in job env",
+			src:       dispatch + "jobs:\n  a:\n    runs-on: ubuntu-latest\n    env:\n      T: ${{ secrets.T }}\n    steps:\n      - run: echo hi\n",
+			fired:     true,
+			reasoning: "holds a credential in its environment",
+		},
+		{
+			name:      "secret in a step with:",
+			src:       dispatch + "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: o/r@v1\n        with:\n          token: ${{ secrets.T }}\n",
+			fired:     true,
+			reasoning: "handed to an action",
+		},
+		{
+			name:      "secret in a run: block",
+			src:       dispatch + "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ${{ secrets.T }}\n",
+			fired:     true,
+			reasoning: "used in a script",
+		},
+		{
+			name:      "secret in an if: condition",
+			src:       dispatch + "jobs:\n  a:\n    runs-on: ubuntu-latest\n    if: ${{ secrets.T != '' }}\n    steps:\n      - run: echo hi\n",
+			fired:     true,
+			reasoning: "reads it",
+		},
+		{
+			name:      "github.token",
+			src:       dispatch + "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: gh api\n        env:\n          GH_TOKEN: ${{ github.token }}\n",
+			fired:     true,
+			reasoning: "plan.md counts any github.token reference as sensitive, and ordinary API workflows do this",
+		},
+		{
+			name:      "id-token: write at job level",
+			src:       dispatch + "jobs:\n  a:\n    permissions:\n      id-token: write\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n",
+			fired:     true,
+			reasoning: "can mint a cloud credential",
+		},
+		{
+			name:      "id-token: write inherited from the workflow",
+			src:       dispatch + "permissions:\n  id-token: write\n" + "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n",
+			fired:     true,
+			reasoning: "a job block is not required to hold it",
+		},
+		{
+			name:      "id-token: read is not write",
+			src:       dispatch + "jobs:\n  a:\n    permissions:\n      id-token: read\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n",
+			fired:     false,
+			reasoning: "cannot mint a credential",
+		},
+		{
+			name:      "checkout with no pull request trigger",
+			src:       dispatch + "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n",
+			fired:     false,
+			reasoning: "there is no fork PR to check out",
+		},
+		{
+			name:      "checkout on a pull request event",
+			src:       "on:\n  workflow_dispatch:\n  pull_request:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n",
+			fired:     true,
+			reasoning: "checks out code on an event a contributor can trigger",
+		},
+		{
+			name:      "checkout on pull_request_target",
+			src:       "on:\n  workflow_dispatch:\n  pull_request_target:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n",
+			fired:     true,
+			reasoning: "same, and the more dangerous trigger",
+		},
+		{
+			name:      "checkout on workflow_run",
+			src:       "on:\n  workflow_dispatch:\n  workflow_run:\n    workflows: [ci]\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n",
+			fired:     true,
+			reasoning: "same, fixed by decision 18",
+		},
+		{
+			name:      "checkout after a step with no uses: on a pull request event",
+			src:       "on:\n  workflow_dispatch:\n  pull_request:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n      - uses: actions/checkout@v4\n",
+			fired:     true,
+			reasoning: "the walk has to step over steps that have no uses: at all",
+		},
+		{
+			name:      "an action whose name merely contains checkout",
+			src:       "on:\n  workflow_dispatch:\n  pull_request:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: some-org/checkout-helper@0123456789abcdef0123456789abcdef01234567\n",
+			fired:     false,
+			reasoning: "only actions/checkout puts pull request code in the workspace",
+		},
+		{
+			name:      "a different checkout action on a pull request event",
+			src:       "on:\n  workflow_dispatch:\n  pull_request:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout-path@0123456789abcdef0123456789abcdef01234567\n",
+			fired:     false,
+			reasoning: "checkout-path is a different action",
+		},
+		{
+			name:      "run steps only on a pull request event",
+			src:       "on:\n  workflow_dispatch:\n  pull_request:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n",
+			fired:     false,
+			reasoning: "a pull request event alone is not sensitive: nothing checks code out",
+		},
+		{
+			name:      "an action that is not checkout on a pull request event",
+			src:       "on:\n  workflow_dispatch:\n  pull_request:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/setup-node@0123456789abcdef0123456789abcdef01234567\n",
+			fired:     false,
+			reasoning: "setup-node does not put pull request code in the workspace",
+		},
+		{
+			name:      "nothing sensitive at all",
+			src:       dispatch + plain,
+			fired:     false,
+			reasoning: "the ordinary case",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := parse.Parse([]byte(tt.src))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if got := len(Rule8(file)) > 0; got != tt.fired {
+				t.Errorf("fired = %v, want %v (%s)", got, tt.fired, tt.reasoning)
+			}
+		})
+	}
+}
+
+// Without a workflow_dispatch trigger there is nothing to be dormant, so rule 8
+// has no subject.
+func TestRule8NeedsTheDispatchTrigger(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"no trigger at all", "jobs:\n  a:\n    uses: o/r/.github/workflows/x.yml@" + sha + "\n    secrets: inherit\n"},
+		{"push only", "on:\n  push:\n    branches: [main]\njobs:\n  a:\n    uses: o/r/.github/workflows/x.yml@" + sha + "\n    secrets: inherit\n"},
+		{"pull_request only", "on:\n  pull_request:\njobs:\n  a:\n    uses: o/r/.github/workflows/x.yml@" + sha + "\n    secrets: inherit\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := parse.Parse([]byte(tt.src))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if got := Rule8(file); len(got) != 0 {
+				t.Errorf("rule 8 fired without workflow_dispatch: %v", got)
+			}
+		})
+	}
+}
+
+// Every part of a job can hide a secret reference. A check that skips one of
+// them is a job that walks through.
+func TestSensitiveJobLooksEverywhere(t *testing.T) {
+	tokens := []string{"secrets.TOKEN", "github.token"}
+	places := []string{
+		"jobs:\n  a:\n    runs-on: ubuntu-latest\n    env:\n      V: %s\n    steps:\n      - run: echo hi\n",
+		"jobs:\n  a:\n    runs-on: ubuntu-latest\n    if: \"${{ %s }}\"\n    steps:\n      - run: echo hi\n",
+		"jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo %s\n",
+		"jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n        env:\n          V: %s\n",
+		"jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n        if: \"${{ %s }}\"\n",
+		"jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: o/r@v1\n        with:\n          v: %s\n",
+		"jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: o/r@v1\n        env:\n          V: %s\n",
+	}
+	for _, token := range tokens {
+		for i, place := range places {
+			t.Run(token+" in place", func(t *testing.T) {
+				src := "on:\n  workflow_dispatch:\n" + fmt.Sprintf(place, token)
+				file, err := parse.Parse([]byte(src))
+				if err != nil {
+					t.Fatalf("Parse: %v", err)
+				}
+				if len(Rule8(file)) == 0 {
+					t.Errorf("secret in place %d was not detected", i)
+				}
+			})
+		}
 	}
 }

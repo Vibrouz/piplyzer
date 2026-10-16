@@ -1,0 +1,33 @@
+# Rule 8 (PPE-008) negative case.
+#
+# Expected: no findings.
+#
+# A rule with only a positive fixture passes whether or not it works. This is
+# the case that matters most for rule 8: workflow_dispatch with nothing
+# privileged behind it is how deploy buttons are built, and flagging it would
+# fire on a large share of legitimate repositories.
+#
+# Note what is NOT here: a job referencing github.token. plan.md defines any
+# job that references secrets.* or github.token as sensitive, so such a job
+# fires, and ordinary API-calling workflows do reference it. That is a false
+# positive source worth knowing about, covered by a test rather than hidden
+# here.
+on:
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm ci
+      - run: npm test
+
+  # Checkout is only sensitive when the workflow can be triggered by a pull
+  # request. This one cannot, so it is an ordinary dispatch job.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+      - run: npm test

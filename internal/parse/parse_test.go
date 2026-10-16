@@ -162,6 +162,86 @@ func TestTriggerSpecUnfiltered(t *testing.T) {
 	}
 }
 
+// A job's secrets: block is either the inherit shorthand or a mapping. Either
+// way the job ends up holding credentials, which is the whole reason rules
+// treat it as sensitive.
+func TestJobSecrets(t *testing.T) {
+	file, err := parse.Parse([]byte(`jobs:
+  inherit:
+    uses: other-org/infra/.github/workflows/build.yml@5f3b1c0d4e8a9b2c7d6e5f4a3b2c1d0e9f8a7b6c
+    secrets: inherit
+  mapping:
+    uses: other-org/infra/.github/workflows/deploy.yml@5f3b1c0d4e8a9b2c7d6e5f4a3b2c1d0e9f8a7b6c
+    secrets:
+      access-token: ${{ secrets.GITHUB_TOKEN }}
+      token: ${{ secrets.DEPLOY_TOKEN }}
+  empty:
+    uses: other-org/infra/.github/workflows/build.yml@5f3b1c0d4e8a9b2c7d6e5f4a3b2c1d0e9f8a7b6c
+    secrets:
+  emptyMap:
+    uses: other-org/infra/.github/workflows/build.yml@5f3b1c0d4e8a9b2c7d6e5f4a3b2c1d0e9f8a7b6c
+    secrets: {}
+  none:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	inherit, _ := file.Job("inherit")
+	if !inherit.Secrets.Declared || !inherit.Secrets.Inherit {
+		t.Errorf("secrets: inherit = %+v, want declared and inherit", inherit.Secrets)
+	}
+
+	mapping, _ := file.Job("mapping")
+	if !mapping.Secrets.Declared || mapping.Secrets.Inherit {
+		t.Errorf("secrets mapping = %+v, want declared and not inherit", mapping.Secrets)
+	}
+	if mapping.Secrets.Values.Len() != 2 {
+		t.Errorf("secrets mapping has %d entries, want 2", mapping.Secrets.Values.Len())
+	}
+	if entry, ok := mapping.Secrets.Values.Get("access-token"); !ok || entry.Text != "${{ secrets.GITHUB_TOKEN }}" {
+		t.Errorf("access-token = %+v, want the raw expression", entry)
+	}
+
+	// Present but empty is still declared. That is the distinction the rules
+	// need: a job with any secrets: key has been given the chance to hold
+	// credentials, and one without has not.
+	for _, id := range []string{"empty", "emptyMap"} {
+		job, _ := file.Job(id)
+		if !job.Secrets.Declared {
+			t.Errorf("job %s: secrets block not declared", id)
+		}
+		if job.Secrets.Inherit || job.Secrets.Values.Len() != 0 {
+			t.Errorf("job %s: secrets = %+v, want declared and empty", id, job.Secrets)
+		}
+	}
+
+	none, _ := file.Job("none")
+	if none.Secrets.Declared {
+		t.Error("a job with no secrets: key reported one")
+	}
+}
+
+func TestJobSecretsErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"unknown shorthand", "jobs:\n  a:\n    secrets: everything\n"},
+		{"nested mapping", "jobs:\n  a:\n    secrets:\n      outer:\n        inner: x\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := parse.Parse([]byte(tt.src)); err == nil {
+				t.Error("Parse accepted a malformed secrets: block")
+			}
+		})
+	}
+}
+
 func TestTriggersAbsent(t *testing.T) {
 	file, err := parse.Parse([]byte("jobs:\n  build:\n    steps:\n      - run: echo hi\n"))
 	if err != nil {

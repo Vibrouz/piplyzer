@@ -144,3 +144,44 @@ func rule7Message() string {
 		"pull request and no review, and it runs with the repository's secrets. Restrict it to the " +
 		"branches you build from, and put anything that should be deliberate behind workflow_dispatch."
 }
+
+// ---------------------------------------------------------------- rule 8
+
+// Rule 8: workflow_dispatch on a job that can reach credentials.
+
+// Rule8ID is the rule identifier for rule 8.
+const Rule8ID = "PPE-008"
+
+// Rule8 reports a dormant privileged job: a workflow that someone can trigger
+// by hand, running a job that holds secrets.
+//
+// Warn, not Block. A workflow_dispatch trigger on a privileged job is a
+// reasonable thing for a maintainer to want, and it is what deploy buttons are
+// built out of. It is a risk worth naming, not a mistake.
+//
+// It is also one of the five components of the GhostAction composite, and like
+// rule 7 it cannot trigger that composite alone.
+func Rule8(file *parse.File) findings.Findings {
+	if !file.Triggers.Has("workflow_dispatch") {
+		return nil
+	}
+
+	var out findings.Findings
+	for _, job := range file.Jobs {
+		sensitive, why := sensitiveJob(file, job)
+		if !sensitive {
+			continue
+		}
+		out = append(out, findings.New(Rule8ID, findings.SeverityWarn, rule8Message(why), jobLocation(file, job)))
+	}
+	return out
+}
+
+func rule8Message(why string) string {
+	return "workflow_dispatch lets someone with write access run this workflow on demand, and " + why +
+		". That is a dormant privileged job: nothing in the workflow looks wrong until it is triggered, " +
+		"and then it runs with credentials it should not be reachable with. A stolen maintainer token can " +
+		"use it to run code in a job that is allowed to deploy or publish, with no pull request to review. " +
+		"Keep workflow_dispatch on the jobs that need it, and put anything privileged behind an " +
+		"environment with required reviewers."
+}

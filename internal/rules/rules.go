@@ -28,6 +28,7 @@ type Rule func(*parse.File) findings.Findings
 var checks = []Rule{
 	Rule1,
 	Rule7,
+	Rule8,
 }
 
 // Engine runs the rules against a workflow.
