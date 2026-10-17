@@ -1,0 +1,49 @@
+# Rule 12 negatives. Expected: 0 findings.
+#
+# Three files' worth of reasons the composite does not fire, and each one is a way
+# it could turn into noise that gets the whole gate switched off.
+name: not a fingerprint
+on:
+  # Filtered, so rule 7 stays quiet. An unfiltered push is rule 7, and rule 7 in
+  # this file would supply the third component that these jobs otherwise lack.
+  push:
+    branches: [main]
+
+jobs:
+  ordinary-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+      - name: unit tests
+        run: make test
+
+  # Rule 4 and rule 5 together, and nothing else. Two weak signals are still just
+  # two: the IP is a loopback health check and the credential is a documentation
+  # example. One more component anywhere in the file would make this match, which
+  # is the design working rather than a near miss.
+  two-weak-signals:
+    runs-on: ubuntu-latest
+    steps:
+      - name: unit tests
+        run: |
+          curl -s http://localhost:8080/health
+          echo "no real credentials here, only AKIAIOSFODNN7EXAMPLE"
+
+  # Rules 7 and 8 with nothing else. This is the case the design is most careful
+  # about: an unfiltered push and a manual trigger job is an ordinary repository,
+  # and without the "at least one mechanic" requirement every repository with a
+  # deploy button would match.
+  with-a-deploy-button:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make build
+
+  # Rule 6 alone: full history plus a scan, which is a changelog job.
+  changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+        with:
+          fetch-depth: 0
+      - name: build the changelog
+        run: git log --pretty=format:"%s" > CHANGELOG.md

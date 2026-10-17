@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/Vibrouz/whoa/internal/findings"
@@ -1263,4 +1264,263 @@ func rule10Message(file *parse.File, repo, ref string) string {
 		"no rule in this tool looks inside another repository, so nothing here can tell you what it does." +
 		pinned + " Pinning to a commit is the control that matters for supply chain; auditing the repository is " +
 		"the control that matters for trust, and this finding is the second one, not a substitute for the first."
+}
+
+// ---------------------------------------------------------------- rule 11
+
+// Rule 11: permissions over-grant.
+
+// Rule11ID is the rule identifier for rule 11.
+const Rule11ID = "PPE-011"
+
+// Rule11 reports a job that holds more token scope than it needs.
+//
+// Mostly Warn, with one Block case. Over-grant is a real risk and also the most
+// ordinary thing in the world: `permissions: write-all` is what a repository has
+// before anyone thinks about permissions at all, and a job with no block
+// inherits a read-write default on repositories created before 2 Feb 2023.
+// Blocking all of that would block most of GitHub Actions, which is the failure
+// mode the whole ruleset is built to avoid.
+//
+// The one Block case is OIDC credential forgery: id-token: write, on an event a
+// pull request can trigger, where untrusted input reaches a run: block. That is
+// not over-grant, it is an exploitable path, because a cloud credential minted
+// for the workflow's identity can be traded for anything that identity can reach.
+func Rule11(file *parse.File) findings.Findings {
+	var out findings.Findings
+	for _, job := range file.Jobs {
+		if finding, ok := rule11For(file, job); ok {
+			out = append(out, finding)
+		}
+	}
+	return out
+}
+
+// rule11For evaluates one job, returning a finding when there is something to say.
+func rule11For(file *parse.File, job parse.Job) (findings.Finding, bool) {
+	permissions, hasBlock := file.PermissionsFor(job.ID)
+
+	// write-all is over-grant wherever it appears, and it is unambiguous: it
+	// says so, rather than depending on a default this tool cannot see.
+	if permissions.Declared && permissions.Scope == parse.PermissionWriteAll {
+		return findings.New(
+			Rule11ID,
+			findings.SeverityWarn,
+			rule11Message("permissions: write-all", "it grants every scope at write level", "set only the scopes this job uses"),
+			permissionLocation(file, job, permissions),
+		), true
+	}
+
+	// The Block case. Checked before the general no-block Warn because a job with
+	// id-token: write and untrusted input is the more serious finding and should
+	// not be reported as a plain over-grant.
+	if permissions.Grants("id-token") && isPREvent(file) && jobHasUntrustedRun(file, job) {
+		return findings.New(
+			Rule11ID,
+			findings.SeverityBlock,
+			rule11Message(
+				"id-token: write on a pull request event with untrusted input in a run: block",
+				"it can mint a cloud credential for this workflow's identity",
+				"drop id-token: write unless this job genuinely federates to a cloud provider, and if it does, "+
+					"do not let a pull request reach the job that mints the credential",
+			),
+			permissionLocation(file, job, permissions),
+		), true
+	}
+
+	// No permissions block anywhere: the job inherits the repository default,
+	// which is read-write for anything created before 2 Feb 2023. Only worth
+	// saying for a job that could do damage with it.
+	if !hasBlock {
+		if sensitive, why := sensitiveJob(file, job); sensitive {
+			return findings.New(
+				Rule11ID,
+				findings.SeverityWarn,
+				rule11Message(
+					"no permissions: block, so it inherits the repository default",
+					why,
+					"add a permissions: block naming only the scopes this job needs",
+				),
+				jobLocation(file, job),
+			), true
+		}
+	}
+
+	return findings.Finding{}, false
+}
+
+// permissionLocation points at the permissions block that decided this.
+//
+// Both callers reach here only when a block exists, since the missing block case
+// points at the job through jobLocation instead. A workflow level block is not
+// one job's doing, so it names no job.
+func permissionLocation(file *parse.File, job parse.Job, permissions parse.Permissions) findings.Location {
+	loc := findings.At(file.Path, permissions.Line)
+	if permissions.Level == parse.PermissionLevelJob {
+		loc.JobID = job.ID
+	}
+	return loc
+}
+
+// jobHasUntrustedRun reports whether untrusted input reaches a run: block in this
+// job, which is what turns id-token: write from over-grant into an exploitable
+// path.
+//
+// Rule 2 already works out which references carry untrusted context, so this asks
+// the same question rather than keeping a second matcher that can drift from it.
+func jobHasUntrustedRun(file *parse.File, job parse.Job) bool {
+	for _, site := range allRunScripts(file) {
+		if site.jobID != job.ID {
+			continue
+		}
+		if len(untrustedReferences(site.script)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// rule11Message explains the finding.
+//
+// The date-based default is stated because it is the part that surprises people:
+// the absence of a permissions block is not a safe default on a repository that
+// predates the change to read-only, which is a great many of them.
+func rule11Message(what, why, fix string) string {
+	return what + " on this job, and " + why + ". A GITHUB_TOKEN is scoped to the repository, and every " +
+		"scope it holds is a credential in the hands of anything this job runs, including a dependency's " +
+		"build script. GitHub changed the default to read-only on 2 Feb 2023, but a repository or " +
+		"organisation created before that date still gets a read-write token unless something restricts it, " +
+		"and nothing here can see which case this repository is. Least privilege costs one line: " + fix + "."
+}
+
+// ---------------------------------------------------------------- composite
+
+// Rule 12: the GhostAction fingerprint. Several weak signals at once.
+
+// Rule12ID is the rule identifier for the composite.
+const Rule12ID = "PPE-012"
+
+// Rule12 reports the GhostAction fingerprint: several of the component rules
+// firing in the same workflow.
+//
+// Block, and this needs a defence that the others do not. By the time it fires,
+// a Block tier rule has already matched, because the trigger requires one of
+// rules 4, 5 or 6. So the merge was already blocked and this finding adds no new
+// friction. That is the whole argument for it being able to Block.
+//
+// It is a separate finding rather than a severity bump on the rules it counts,
+// for two reasons. First, a severity mutation would mean changing rules 4 through
+// 8 to depend on each other, and every rule here is a pure function over one
+// parsed workflow on purpose. Second, the signal is genuinely different: rule 4
+// alone is a hardcoded endpoint that might be an internal service, and rule 5
+// alone is a pattern that might be a false match, but rule 4 and rule 5 together
+// in a workflow with an unfiltered push is a different claim from either.
+func Rule12(file *parse.File) findings.Findings {
+	// The component rules are called directly rather than through the engine,
+	// because the engine calls this rule and that would be a cycle. It also keeps
+	// the dependency one way, which is what lets the composite count findings
+	// without any rule knowing another rule exists.
+	counts := map[string]int{}
+	for _, component := range fingerprintComponents {
+		for range componentRule(component)(file) {
+			counts[component]++
+		}
+	}
+
+	var components []string
+	for _, id := range fingerprintComponents {
+		if counts[id] > 0 {
+			components = append(components, id)
+		}
+	}
+
+	// Three or more components, at least one of which is a mechanic.
+	//
+	// Rules 7 and 8 are near-universal on their own, so the threshold alone would
+	// fire on any repository with an unfiltered push and a deploy button. Requiring
+	// a mechanic is what makes it specific, and the requirement is folded into the
+	// count rather than checked separately: a workflow with three components where
+	// all three are triggers or credentials is not a fingerprint, and with rules 7
+	// and 8 as the only non-mechanics that cannot arise from a count of three
+	// anyway. Counting mechanics alongside the total keeps both conditions in one
+	// place instead of spreading them across a threshold and a follow up check.
+	var mechanics int
+	for _, id := range components {
+		if fingerprintMechanics[id] {
+			mechanics++
+		}
+	}
+	if len(components) < 3 || mechanics == 0 {
+		return nil
+	}
+
+	return findings.Findings{
+		findings.New(
+			Rule12ID,
+			findings.SeverityBlock,
+			rule12Message(components, counts),
+			findings.At(file.Path, 1),
+		),
+	}
+}
+
+// fingerprintComponents are the rules whose combination forms the fingerprint,
+// in the order they are named in the message.
+var fingerprintComponents = []string{Rule4ID, Rule5ID, Rule6ID, Rule7ID, Rule8ID}
+
+// componentRule resolves a component's ID back to its function.
+//
+// The IDs are constants and the functions are in this same file, so a lookup
+// built once is not a design in need of reflection. A missing entry is a
+// programming error rather than a workflow condition, and it returns a function
+// that finds nothing rather than panicking, so a bad addition to the slice shows
+// up as a fingerprint that never fires rather than as a crash.
+var componentRules = func() map[string]Rule {
+	rules := map[string]Rule{}
+	for _, id := range fingerprintComponents {
+		switch id {
+		case Rule4ID:
+			rules[id] = Rule4
+		case Rule5ID:
+			rules[id] = Rule5
+		case Rule6ID:
+			rules[id] = Rule6
+		case Rule7ID:
+			rules[id] = Rule7
+		case Rule8ID:
+			rules[id] = Rule8
+		}
+	}
+	return rules
+}()
+
+func componentRule(id string) Rule {
+	if rule, ok := componentRules[id]; ok {
+		return rule
+	}
+	return func(*parse.File) findings.Findings { return nil }
+}
+
+// fingerprintMechanics are the components that carry actual exfiltration or
+// harvesting. Without one of these the rest are configuration choices that most
+// repositories make anyway.
+var fingerprintMechanics = map[string]bool{
+	Rule4ID: true,
+	Rule5ID: true,
+	Rule6ID: true,
+}
+
+func rule12Message(components []string, counts map[string]int) string {
+	var named []string
+	for _, id := range components {
+		named = append(named, fmt.Sprintf("%s (%d)", id, counts[id]))
+	}
+
+	return "this workflow matches " + strconv.Itoa(len(components)) + " of the 5 components of the GhostAction " +
+		"fingerprint at once: " + strings.Join(named, ", ") + ". No single one of these is decisive. A bare IP " +
+		"address is often an internal service, a credential pattern is often a false match, and an unfiltered " +
+		"push trigger is how most repositories are built. Together, in one workflow, they are the shape of " +
+		"this specific incident: the attacker takes a maintainer token, pushes a workflow that reaches a literal " +
+		"address to send data out and scans the git history for credentials that were committed and rotated. " +
+		"Treat this workflow as hostile until you have read every step above and can say what each one is for."
 }
