@@ -3,6 +3,7 @@
 # | Fixture                        | Expected | What it pins down                              |
 # |--------------------------------|----------|------------------------------------------------|
 # | ppe-003/malicious.yml          | 13 (9 Block, 4 Warn) | rules 3, 4 and 5 together in one workflow |
+# | ppe-003/legitimate.yml         | 0 Block, 3 Warn  | rule 4, real workflows an earlier version blocked |
 # | ppe-006/correlated.yml         | 3 Block  | rule 6, both signals in the same job          |
 # | ppe-006/split_job.yml          | 0        | rule 6, the signals in different jobs         |
 #
@@ -29,3 +30,17 @@
 #   The same applies to the secret patterns in rule 5.
 # - The `clean` job's `AKIA_REGION` and `sk-directory` do not match rule 5,
 #   because the patterns require the credential body, not just the prefix.
+# `legitimate.yml` holds every rule 4 false positive found by auditing the rule
+# against real projects rather than against imagined ones. Two families:
+#
+# - An address used as data. Managing addresses over an HTTP API is a category of
+#   tooling (DNS providers, fail2ban and CrowdSec wrappers, allowlist editors)
+#   where a dotted quad beside a curl is the entire point. Real examples taken
+#   from Porkbun's API reference, a mailcow issue, and crowdsec and ALBIS
+#   wrappers.
+# - Loopback. `curl --resolve host:80:127.0.0.1 http://host/` is curl's own
+#   documented local vhost test. RFC1918 is deliberately NOT exempt: private
+#   space is where exfiltration goes.
+#
+# It emits 3 Warn findings, all plain http://, which is rule 4 working rather
+# than failing. The assertion is that nothing here blocks.

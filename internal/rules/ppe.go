@@ -475,6 +475,12 @@ func literalEndpointMatches(script string) []endpointMatch {
 				if !hasNetworkCommand {
 					continue
 				}
+				// Two ways a bare address is data rather than a destination.
+				// Both were found by looking at real workflows rather than by
+				// imagining them, and both would otherwise block a repository.
+				if isLoopback(match.expression) || isIPPayload(text, loc[0]) {
+					continue
+				}
 				match.kind = endpointIP
 			}
 			out = append(out, match)
@@ -575,6 +581,142 @@ func placeIP(spans []urlSpan, offset int) ipPlacement {
 		return ipURLPath
 	}
 	return ipStandalone
+}
+
+// isLoopback reports whether an address is in 127.0.0.0/8.
+//
+// curl's own documentation gives `curl --resolve example.com:80:127.0.0.1
+// http://example.com/` as the way to test a virtual host locally, and every
+// suite that exercises SNI or vhost routing writes that line. Nothing leaves the
+// machine through 127.0.0.1, so an exfiltration endpoint there is not a thing.
+//
+// RFC1918 is deliberately NOT exempt. Private space is where exfiltration goes,
+// and 10.x is what an internal collector is usually reached at.
+func isLoopback(address string) bool {
+	return strings.HasPrefix(address, "127.")
+}
+
+// isIPPayload reports whether an address at an offset is data being sent or
+// configured, rather than a destination being connected to.
+//
+// Managing addresses over an HTTP API is a whole category of tooling: DNS
+// providers, fail2ban and CrowdSec wrappers, allowlist editors. In every one of
+// them the presence of a dotted quad beside a curl is the entire point of the
+// command, and an earlier version of this rule blocked all of them.
+//
+// The signal is the flag that owns the argument, not the quoting. An address is
+// data when it sits in the argument of a flag that sends a body or a header:
+//
+//	curl -X POST https://api.porkbun.com/api/json/v3/dns/create/example.com \
+//	  -d '{"type":"A","content":"1.2.3.4"}'
+//	curl -X POST http://localhost:8080/api/ip/unban -d '{"ip": "1.2.3.4"}'
+//	curl -X POST https://telemetry.example.com/ingest -H "X-Version: 1.2.3.4"
+//
+// or when it follows an = in the same argument, as in -d "version=1.2.3.4".
+//
+// Quoting alone is deliberately NOT the signal, and an earlier version treated
+// it as one. `nc "198.51.100.42" 4444` and `rsync -a file "10.0.0.5:/tmp/"` are
+// ordinary shell, and reading them as payload would have handed an attacker a
+// one-character bypass of a Block rule. The flag is what separates them.
+//
+// Only consulted for an address that is not in URL position, so `curl
+// "http://1.2.3.4/x"` is already a URL host before this is reached.
+func isIPPayload(text string, offset int) bool {
+	// The easy half: the address sits directly behind an equals sign.
+	if strings.HasSuffix(text[:offset], "=") {
+		return true
+	}
+	open := openingQuoteIndex(text, offset)
+	if open < 0 {
+		// Not quoted and not behind an =. That is a bare token, so it is a
+		// destination or it is nothing.
+		return false
+	}
+	return isDataFlagArgument(text, open)
+}
+
+// isDataFlagArgument reports whether the quoted word opening at an index is the
+// argument of a flag that sends a body, a header or similar.
+func isDataFlagArgument(text string, open int) bool {
+	head := strings.Fields(text[:open])
+	if len(head) == 0 {
+		return false
+	}
+	// The word before the quote is either the flag itself, or a name= attached
+	// to one, as in mailcow's `-d attr='{"whitelist":"1.2.3.4"}'`.
+	for _, word := range head {
+		if isDataFlag(word) {
+			return true
+		}
+	}
+	// A JSON object as the argument: {"ip":"1.2.3.4"}. The brace has to be in
+	// this word, not earlier on the line, so the shell -c '{ ... }' case does
+	// not sweep up an unrelated address.
+	return strings.Contains(head[len(head)-1], "{")
+}
+
+// isDataFlag reports whether a word is a flag whose argument is a body, a
+// header or similar.
+func isDataFlag(word string) bool {
+	// Strip an attached name=, as in attr= for a `-d attr=` style.
+	if eq := strings.IndexByte(word, '='); eq >= 0 {
+		word = word[:eq]
+	}
+	switch word {
+	case "-d", "--data", "--data-raw", "--data-binary", "--data-urlencode",
+		"-H", "--header", "-F", "--form", "--form-string",
+		"-b", "--cookie", "-A", "--user-agent", "-e", "--referer", "-w", "--write-out",
+		"-X", "--request":
+		return true
+	}
+	return false
+}
+
+// openingQuoteIndex returns the index of the innermost quote that is still open
+// at an offset, or -1 when the offset is not inside quotes.
+func openingQuoteIndex(text string, offset int) int {
+	// A stack of (index, quote character) pairs. Tracking the index as well as
+	// the character is what makes the innermost quote findable at all: a stack
+	// of characters can say which quote is open but not where it was.
+	type openQuote struct {
+		at    int
+		quote byte
+	}
+	var stack []openQuote
+
+	for i := 0; i < offset && i < len(text); i++ {
+		c := text[i]
+		if len(stack) > 0 {
+			top := stack[len(stack)-1]
+			// A backslash escapes the next character inside double quotes only.
+			// Inside single quotes a backslash is an ordinary character, which
+			// is POSIX behaviour.
+			if c == '\\' && top.quote == '"' && i+1 < len(text) {
+				i++
+				continue
+			}
+			if c == top.quote {
+				stack = stack[:len(stack)-1]
+				continue
+			}
+		}
+		if c == '\'' || c == '"' {
+			// A quote of the other kind inside an open string is literal in the
+			// shell, but pushing it anyway is what lets the innermost quote be
+			// found in `curl -d '{"ip":"1.2.3.4"}'`, where the JSON quotes all
+			// sit inside the shell's single quotes. Treating them as data instead
+			// hides the value's own quote, which is the one a field check needs.
+			//
+			// This cannot manufacture a false negative on its own, because
+			// being inside quotes is not what makes an address data. The flag in
+			// front of the argument is, and that check is unchanged.
+			stack = append(stack, openQuote{at: i, quote: c})
+		}
+	}
+	if len(stack) == 0 {
+		return -1
+	}
+	return stack[len(stack)-1].at
 }
 
 func rule4Message(match endpointMatch) string {
@@ -875,6 +1017,11 @@ const Rule9ID = "PPE-009"
 // also right that the miss is total compromise: a fork contributor opens a pull
 // request, the workflow checks their code out, and their code runs with the
 // repository's secrets and a write-scoped token. There is no partial credit.
+//
+// The shell-command shape is narrower than plan.md asked for, deliberately.
+// plan.md said any `git fetch` counts, and blocking that blocked real workflows
+// doing the documented hardening move of fetching the trusted base. See the
+// comment on prFetchRef for the split that replaced it.
 func Rule9(file *parse.File) findings.Findings {
 	if !pwnRequestTrigger(file) {
 		return nil
@@ -925,14 +1072,58 @@ var (
 // The commands that bring a pull request's code into a run: step by hand.
 //
 // checkout refuses fork code on these events by default, so reaching past it is
-// a deliberate opt-out. git fetch covers the common form, gh pr checkout is the
-// CLI equivalent, and gh run download is how a workflow_run job picks up the
-// artifacts of the run that triggered it.
+// a deliberate opt-out. gh pr checkout is unambiguous: there is no reason to
+// check a pull request out into a privileged job other than to run it.
+//
+// `gh run download` was here and is not any more. GitHub Security Lab recommends
+// workflow_run plus an artifact download as the safe replacement for
+// pull_request_target, CodeQL documents the same pair, and it is how real
+// pipelines promote a build to a deploy job. A Block finding on the officially
+// blessed pattern is a finding with no way to act on it, which is the failure
+// mode decisions.md section 9 says costs us the gate.
+//
+// That leaves an artifact hand-off undetected, deliberately. CodeQL's
+// actions-untrusted-checkout queries already cover it, and cross workflow
+// analysis is not something a per file rule can do anyway.
 var (
-	gitFetch      = regexp.MustCompile(`\bgit\s+fetch\b`)
-	ghPRCheckout  = regexp.MustCompile(`\bgh\s+pr\s+checkout\b`)
-	ghRunDownload = regexp.MustCompile(`\bgh\s+run\s+download\b`)
+	gitFetch     = regexp.MustCompile(`\bgit\s+fetch\b`)
+	ghPRCheckout = regexp.MustCompile(`\bgh\s+pr\s+checkout\b`)
 )
+
+// A fetch of the pull request's own ref, as opposed to a fetch of the base.
+//
+// This distinction is the whole rule. `git fetch origin main` under
+// pull_request_target is the documented hardening move: pull the trusted base
+// config precisely because the job is privileged, and then run it rather than
+// the contributor's code. Real workflows doing exactly that were blocked by an
+// earlier version of this rule.
+//
+// A fetch of pull/N/head is not decidable from the fetch alone, and GitHub
+// Security Lab's own guidance says that treating pull request contents as
+// passive data is safe. So a PR ref alone does not block. It blocks when the
+// script also checks it out or switches to it, which is the difference between
+// reading the diff and running the code.
+var (
+	// The ref has to allow for the number being an expression rather than a
+	// literal, because `pull/${{ github.event.number }}/head` is how most people
+	// write it. Requiring \d+ after the slash misses exactly the common form.
+	prFetchRef = regexp.MustCompile(`\bpull/(?:\d|\$)|refs/pull/|\bHEAD:pr|\bhead\.sha\b|\bhead_ref\b`)
+	// Uses the fetched code rather than reading it.
+	checkoutRef = regexp.MustCompile(`\bgit\s+(?:checkout|switch|merge|rebase|cherry-pick|reset)\b`)
+	// Builds or runs something, which is what makes a checked out PR fatal.
+	// Kept narrow on purpose: a rule that fires on the word "./" is a rule that
+	// fires on every repository.
+	runsFetched = regexp.MustCompile(`(?m)^\s*(?:\./|make\b|npm\b|npx\b|yarn\b|pnpm\b|bun\b|python3?\b|pytest\b|tox\b|go\b|cargo\b|gradlew?\b|\./gradlew\b|mvn\b|docker\s+build\b)`)
+)
+
+// gitFetchShape reports whether a script fetches a pull request's code and then
+// uses it as code.
+func gitFetchShape(script string) bool {
+	if !gitFetch.MatchString(script) || !prFetchRef.MatchString(script) {
+		return false
+	}
+	return checkoutRef.MatchString(script) && runsFetched.MatchString(script)
+}
 
 // untrustedFetchReason returns the line and the reason a step pulls in
 // untrusted code, or an empty reason when it does not.
@@ -959,17 +1150,12 @@ func untrustedFetchReason(step parse.Step) (line int, why string) {
 	// Comments are stripped first: a workflow that documents the command it
 	// used to run is not running it.
 	run := uncommentedScript(step.Run)
-	for _, command := range []struct {
-		re  *regexp.Regexp
-		why string
-	}{
-		{gitFetch, "the step runs git fetch, which reaches past checkout"},
-		{ghPRCheckout, "the step runs gh pr checkout, which checks out the pull request"},
-		{ghRunDownload, "the step runs gh run download, which fetches the artifacts of the run that triggered this one"},
-	} {
-		if at := command.re.FindStringIndex(run); at != nil {
-			return step.RunLineAt(at[0]), command.why
-		}
+	if at := ghPRCheckout.FindStringIndex(run); at != nil {
+		return step.RunLineAt(at[0]), "the step runs gh pr checkout, which checks out the pull request"
+	}
+	if gitFetchShape(run) {
+		at := gitFetch.FindStringIndex(run)
+		return step.RunLineAt(at[0]), "the step fetches the pull request's own ref and then checks it out and runs it"
 	}
 	return 0, ""
 }

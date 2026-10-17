@@ -1,0 +1,71 @@
+# Rule 9 negatives: the fetch shapes that are not this rule.
+#
+# Expected: 0 findings.
+#
+# Every script here was blocked by an earlier version of this rule and comes from
+# a real project. The common thread is that they fetch something trusted.
+#
+# `git fetch origin main` under pull_request_target is the documented hardening
+# move, not a mistake: pull the base branch's own tooling and run that instead of
+# the contributor's code, precisely because the job is privileged. It appears in
+# Xiaomi's miloco, Microsoft's discovery, chadbyte/clay, and a template that five
+# separate repositories copied.
+#
+# Fetching a PR ref and reading it as data is GitHub Security Lab's own guidance:
+# "when the PR contents are treated as passive data, i.e. not in a position of
+# influence over the build/testing process, it is safe." Sherlock, servo,
+# InstructLab and OWASP all do this. The difference from the attack is the last
+# two lines of the step: the attack checks the code out and runs it, and reading
+# it as data does neither.
+name: base fetches under pull_request_target
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+
+jobs:
+  restore-trusted-tooling:
+    runs-on: ubuntu-latest
+    steps:
+      # Restore the gate script from the base branch so a pull request cannot
+      # edit the thing that is judging it.
+      - name: restore the gate from base
+        run: |
+          git fetch origin main --depth=1
+          git checkout origin/main -- scripts/check.js
+
+      # Run the base branch's review gate. This uses git show, not checkout, and
+      # the ref is the base.
+      - name: run the base review gate
+        run: |
+          git fetch origin main
+          if git show origin/main:.ci/pr-review-gate.sh | bash -s -- "$PR_NUMBER"; then
+            echo "gate passed"
+          fi
+
+  read-the-pr-as-data:
+    runs-on: ubuntu-latest
+    steps:
+      # Fetch the PR head, then read one file out of it with git show. The code
+      # is never checked out and never executed.
+      - name: compare a data file against the base
+        run: |
+          git fetch origin pull/${{ github.event.pull_request.number }}/head:pr
+          MERGE_BASE=$(git merge-base origin/${{ github.base_ref }} pr)
+          git show pr:sherlock_project/resources/data.json > data.json.head
+
+      # Fetch the base commit by sha, to diff across a fork boundary.
+      - name: diff against the base commit
+        run: |
+          git fetch origin ${{ github.event.pull_request.base.sha }} --depth=1 2>/dev/null || true
+          git diff --stat FETCH_HEAD
+
+  promote-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      # The artifact hand-off GitHub Security Lab recommends as the safe
+      # replacement for pull_request_target. See workflow_run.yml for why this
+      # is not a finding.
+      - name: download what the build produced
+        run: gh run download "$TRIGGERING_RUN_ID" --dir "$RUNNER_TEMP/dist"
+
+      - run: ./publish.sh "$RUNNER_TEMP/dist"

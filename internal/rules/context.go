@@ -163,22 +163,57 @@ type runSite struct {
 // thing for someone to write. For a Warn rule that is untidy; for a Block rule it
 // blocks a repository on a line nobody runs.
 //
-// A # only starts a comment at the start of a line or after whitespace. That
-// keeps the other job of the character working: it is also the fragment
-// separator in a URL, as in curl https://host/a#1.2.3.4, and it appears inside
-// quoted strings and after an = in an assignment. Both are written with a
-// character before the # that is not whitespace, so neither is mistaken for a
-// comment.
+// The scan is quote aware, and that is not a refinement. An earlier version just
+// looked for a # after whitespace, which meant `echo 'release #42' && git fetch
+// origin pull/1/head` lost everything after the quoted hash and the real command
+// went unseen. A Block rule whose bypass is one apostrophe is worse than the
+// false positive it was written to remove, so quoting has to be understood rather
+// than approximated.
+//
+// Inside single quotes a backslash is an ordinary character, which is POSIX
+// behaviour and is what `bash -c 'echo '\”hi'\”'` depends on. Inside double
+// quotes a backslash escapes. Outside quotes a backslash escapes too, so a
+// trailing backslash continues the line rather than ending it.
 func stripShellComment(line string) string {
+	var quote byte
+	var out strings.Builder
+
 	for i := 0; i < len(line); i++ {
-		if line[i] != '#' {
+		c := line[i]
+
+		if quote != 0 {
+			out.WriteByte(c)
+			// Escapes apply inside double quotes only. In single quotes POSIX
+			// gives a backslash no special meaning at all.
+			if c == '\\' && quote == '"' && i+1 < len(line) {
+				out.WriteByte(line[i+1])
+				i++
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
 			continue
 		}
-		if i == 0 || line[i-1] == ' ' || line[i-1] == '\t' {
-			return line[:i]
+
+		switch {
+		case c == '\'' || c == '"':
+			quote = c
+			out.WriteByte(c)
+		case c == '\\' && i+1 < len(line):
+			// An escaped character outside quotes cannot open a comment, so it
+			// and whatever it escapes are both kept.
+			out.WriteByte(c)
+			out.WriteByte(line[i+1])
+			i++
+		case c == '#' && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t'):
+			// An unquoted # after whitespace starts a comment and ends the line.
+			return out.String()
+		default:
+			out.WriteByte(c)
 		}
 	}
-	return line
+	return out.String()
 }
 
 // uncommentedScript removes the comments from a whole script, keeping the line

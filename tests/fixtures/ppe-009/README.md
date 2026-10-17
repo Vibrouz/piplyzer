@@ -5,6 +5,7 @@
 # | ppe-009/pwn_request.yml | 5 Block | one step per shape, across four separate jobs    |
 # | ppe-009/workflow_run.yml | 1 Block | the same rule on the other privileged trigger     |
 # | ppe-009/negatives.yml   | 0        | every shape on every trigger that is not privileged |
+# | ppe-009/base_fetch.yml  | 0        | the fetch shapes that are the documented hardening move |
 #
 # `pwn_request.yml` puts each shape in its own job on purpose. A rule that
 # matched only one of the three shapes would still pass a fixture containing all
@@ -42,3 +43,28 @@
 # starts a comment at the start of a line or after whitespace, which leaves the
 # other job of the character intact: it is also the fragment separator in a URL,
 # and it appears inside quoted strings and after an `=`.
+
+# ## The false positives that were found by auditing against real projects
+#
+# `workflow_run.yml` and `base_fetch.yml` exist because an earlier version of
+# rule 9 blocked every one of their lines. Each came from a real repository:
+#
+# - `git fetch origin main` under pull_request_target. This is the documented
+#   hardening move, not a mistake: pull the base branch's own tooling and run
+#   that instead of the contributor's code, precisely because the job is
+#   privileged. Found in Xiaomi's miloco, Microsoft's discovery, chadbyte/clay,
+#   and a template five other repositories copied.
+# - `git fetch origin pull/N/head` followed by `git show` or `git merge-base`.
+#   GitHub Security Lab's guidance is that pull request contents treated as
+#   passive data are safe, and it says so explicitly. Implemented in Sherlock,
+#   servo, InstructLab and OWASP.
+# - `gh run download` on workflow_run. GitHub Security Lab recommends this pair
+#   as the safe replacement for pull_request_target, CodeQL's
+#   actions-untrusted-checkout query documents it, and it is how real pipelines
+#   promote a build to a deploy job.
+#
+# So `gh run download` is not a finding at all, and `git fetch` needs all three
+# of fetch a PR ref, check it out, and run something. The gap that leaves is
+# real and deliberate: an artifact hand-off from an untrusted triggering run is
+# undetected, and covering it means knowing whether the *other* workflow was
+# untrusted, which is not a question one file can answer.
