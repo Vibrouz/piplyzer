@@ -1,0 +1,42 @@
+# Rule 9 on workflow_run rather than pull_request_target.
+#
+# Expected: 0 findings.
+#
+# This fixture is now a negative, and it is the most important one in the
+# directory. workflow_run plus an artifact download is the pattern GitHub
+# Security Lab recommends as the safe replacement for pull_request_target:
+# the elevated workflow runs trusted code from the default branch and treats
+# whatever the triggering run produced as data. CodeQL documents the same pair,
+# and it is how real pipelines promote a build to a deploy job.
+#
+# An earlier version of this rule blocked `gh run download` here, which meant
+# blocking the officially recommended replacement for the thing this rule exists
+# to catch. That is a finding with no way to act on it, which is how a blocking
+# rule gets switched off.
+#
+# The gap is deliberate and real: an attacker who can get a privileged workflow
+# to run artifacts they built does get code execution. Covering it properly means
+# knowing whether the *triggering* workflow was itself untrusted, which is not a
+# question one file can answer. CodeQL's actions-untrusted-checkout queries are
+# the right home for it.
+name: workflow run
+on:
+  workflow_run:
+    workflows: [Build]
+    types: [completed]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      # Trusted checkout of the default branch. This is the part that makes the
+      # pattern safe and it is what makes the rest of the job ordinary.
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+
+      # The untrusted half, handled as data. GitHub's own example extracts to
+      # the runner temp directory rather than the workspace, precisely because
+      # the workspace may hold executable scripts.
+      - name: install what the build produced
+        run: gh run download "$TRIGGERING_RUN_ID" --dir "$RUNNER_TEMP/dist"
+
+      - run: ./publish.sh "$RUNNER_TEMP/dist"

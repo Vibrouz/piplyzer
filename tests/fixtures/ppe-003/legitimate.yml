@@ -1,0 +1,74 @@
+# Rule 4 negatives. Expected: 0 Block findings.
+#
+# It does produce 3 Warn findings, all of them the plain http:// rule, and that is
+# the rule working rather than failing: those three lines really do fetch over
+# plaintext. What this fixture asserts is that nothing here BLOCKS.
+#
+# Every line here came out of a real workflow that an earlier version of this
+# rule blocked. They are in a fixture rather than in a unit test because the
+# point of them is that they are what real repositories actually contain.
+#
+# Two families, and both of them were found by auditing the rule against real
+# projects rather than by imagining what might go wrong:
+#
+#   1. A four part address used as DATA rather than as a destination. Managing
+#      addresses over an HTTP API is a whole category of tooling: DNS providers,
+#      fail2ban and CrowdSec wrappers, allowlist editors. In all of them the
+#      presence of a dotted quad beside a curl is the entire point.
+#   2. Loopback. `curl --resolve host:80:127.0.0.1 http://host/` is curl's own
+#      documented way to test a virtual host, and nothing leaves the machine
+#      through 127.0.0.1.
+#
+# No credentials appear here. The API keys are placeholders.
+name: legitimate endpoints
+on:
+  push:
+    branches: [main]
+
+jobs:
+  dns-and-firewall:
+    runs-on: ubuntu-latest
+    steps:
+      # Creating a DNS record. 1.2.3.4 is the A record's content, and the host
+      # being talked to is api.porkbun.com.
+      - name: create an A record
+        run: |
+          curl -sS -X POST https://api.porkbun.com/api/json/v3/dns/create/example.com \
+            -H "Content-Type: application/json" \
+            -d '{"apikey":"YOUR_API_KEY","type":"A","content":"1.2.3.4","ttl":"600"}'
+
+      # Unbanning an address. The four part token here is the thing being
+      # unblocked, and it also matches the word ftp in the service field.
+      - name: unban an address
+        run: |
+          curl -sS -X POST https://albis.example.com/api/ban.php \
+            -H "Authorization: Bearer YOUR_NODE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"ip":"1.2.3.4","ports":"21","protocol":"tcp","service":"ftp"}'
+
+      # Several addresses at once, as a whitelist, none of them an endpoint.
+      - name: set the allowlist
+        run: |
+          curl -sS -X POST http://localhost:8080/api/config \
+            -d '{"whitelist":"1.2.3.4,4.3.2.1","blacklist":"5.6.7.8"}'
+
+      # A version in a request body, which is the shape this rule regressed on.
+      # An earlier version reported it because it only asked whether a network
+      # command was somewhere on the line.
+      - name: report a build
+        run: |
+          curl -sS -X POST https://telemetry.example.com/ingest \
+            -H "X-Version: 1.2.3.4" \
+            -d '{"service":"api","version":"1.2.3.4"}'
+
+  local-testing:
+    runs-on: ubuntu-latest
+    steps:
+      # curl's documented local vhost test.
+      - run: curl --resolve example.com:80:127.0.0.1 http://example.com/
+
+      # And the same over https, which is the more common spelling.
+      - run: curl --resolve example.com:443:127.0.0.1 https://example.com/
+
+      # The whole 127/8 range, not just .0.1.
+      - run: curl --resolve example.com:80:127.0.0.53 http://example.com/

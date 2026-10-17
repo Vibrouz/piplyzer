@@ -1,0 +1,69 @@
+# Rule 9: pwn request. A privileged trigger running a fork's code.
+#
+# Expected: 4 findings, all Block, all PPE-009.
+#
+# One step per shape that reaches past checkout's default refusal to check out
+# fork code, in four separate jobs. They are in separate jobs on purpose: the
+# rule is per step, so putting them together proves each one stands alone rather
+# than only being found as part of a group.
+#
+# The by-hand job fetches a PR ref, checks it out and then runs it. All three are
+# required. Fetching a PR ref and only reading it as data is GitHub Security Lab's
+# own recommended pattern, so a fetch on its own is not this rule.
+name: pwn request
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+
+jobs:
+  head-sha:
+    runs-on: ubuntu-latest
+    steps:
+      # Shape 1: the fork's own commit, named directly.
+      - name: checkout the fork's commit
+        uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      # Clean job: the default checkout of the base branch is exactly right on
+      # pull_request_target and must not be flagged.
+      - run: echo "reviewing ${{ github.event.pull_request.title }}"
+
+  pull-ref:
+    runs-on: ubuntu-latest
+    steps:
+      # Shape 1 again, with the merge ref rather than a sha. Same risk, and the
+      # ref does not obviously contain the word fork.
+      - name: checkout the merge ref
+        uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+        with:
+          ref: refs/pull/${{ github.event.number }}/merge
+
+  fork-repo:
+    runs-on: ubuntu-latest
+    steps:
+      # Shape 2: a repository: input. No checkout-shaped check reads this one,
+      # because the ref is untouched and only the repository points elsewhere.
+      #
+      # There is no ref: here on purpose. With the repository pointed at the fork
+      # and no ref at all, checkout takes the fork's default branch, which is the
+      # attacker's code, and there is nothing for a ref-shaped check to look at.
+      - name: checkout the fork
+        uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+
+  by-hand:
+    runs-on: ubuntu-latest
+    steps:
+      # Shape 3: a shell command. Nothing in it looks like a checkout, so this
+      # is the shape most likely to be missed.
+      #
+      # Fetching the PR ref is not enough on its own and checking it out is not
+      # enough either. This blocks because all three lines are here: fetch the
+      # fork's ref, move onto it, and run something.
+      - name: fetch and build the fork
+        run: |
+          git fetch origin pull/1/head:pr-1
+          git checkout pr-1
+          ./run-tests.sh

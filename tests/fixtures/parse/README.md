@@ -1,7 +1,7 @@
 # Parser fixtures for internal/parse.
 #
 # Each file here covers one row of the "Parser coverage" table in
-# plans/build_plan.md. A row is a case where a plausible looking parser
+# the parser. A row is a case where a plausible looking parser
 # compiles, passes a naive test, and silently misses the real thing, so each of
 # these is a specific trap rather than a sample workflow.
 #

@@ -1,0 +1,63 @@
+# Rule 6 (PPE-006) negative case.
+#
+# Expected: no findings.
+#
+# This is the case that decides whether rule 6 survives contact with real
+# repositories. fetch-depth: 0 alone is a legitimate choice for a release job
+# computing a changelog. A git log -p alone is legitimate for a job running
+# blame. Both in the SAME job is the harvest shape. Split across two jobs it is
+# two ordinary jobs, and correlating per file rather than per job would block
+# every repository shaped like this one.
+#
+# Four jobs, each with one signal or the other, and one with neither:
+#
+#   changelog   fetch-depth: 0, no history scan      legitimate, needs history
+#   blame       git log -p, default depth checkout   legitimate, reads history
+#   show-one    git show, fetch-depth: 1             shallow is the default
+#   plain       neither
+name: ci
+
+# Branch filtered so this negative fixture is clean for every rule, not just
+# the one it is about.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+        with:
+          fetch-depth: 0
+      - name: changelog between tags
+        run: |
+          git log --pretty=format:"%s" v1.0.0..HEAD > CHANGELOG.md
+
+  blame:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+      - name: find the author of this line
+        run: git log -p -L 42,42:src/main.go
+
+  show-one:
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 1 is the default written out. One commit of history cannot
+      # reach anything, so there is no harvest here even with git show present.
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+        with:
+          fetch-depth: 1
+      - name: inspect the last commit
+        run: git show --stat HEAD
+
+  plain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+      - run: npm ci
+      - run: npm test

@@ -127,6 +127,173 @@ func TestTriggerFormsAreEquivalent(t *testing.T) {
 	}
 }
 
+// Unfiltered decides whether rule 7 fires, so every filter shape has a case.
+// A workflow has one on: block, which is why these are inline rather than
+// fixtures.
+func TestTriggerSpecUnfiltered(t *testing.T) {
+	tests := []struct {
+		name       string
+		on         string
+		unfiltered bool
+	}{
+		{"no filters", "on:\n  push:", true},
+		{"branches", "on:\n  push:\n    branches: [main]", false},
+		{"branches-ignore", "on:\n  push:\n    branches-ignore: ['wip/**']", false},
+		{"tags", "on:\n  push:\n    tags: ['v*']", false},
+		{"tags-ignore", "on:\n  push:\n    tags-ignore: ['n/**']", false},
+		{"paths", "on:\n  push:\n    paths: ['src/**']", false},
+		{"paths-ignore", "on:\n  push:\n    paths-ignore: ['docs/**']", false},
+		{"empty branches list filters nothing", "on:\n  push:\n    branches: []", true},
+		{"a types filter is not a ref filter", "on:\n  pull_request_target:\n    types: [opened]", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := parse.Parse([]byte(tt.on + "\n"))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			for _, spec := range file.Triggers.Specs {
+				if got := spec.Unfiltered(); got != tt.unfiltered {
+					t.Errorf("%s.Unfiltered() = %v, want %v", spec.Event, got, tt.unfiltered)
+				}
+			}
+		})
+	}
+}
+
+// A job's secrets: block is either the inherit shorthand or a mapping. Either
+// way the job ends up holding credentials, which is the whole reason rules
+// treat it as sensitive.
+func TestJobSecrets(t *testing.T) {
+	file, err := parse.Parse([]byte(`jobs:
+  inherit:
+    uses: other-org/infra/.github/workflows/build.yml@5f3b1c0d4e8a9b2c7d6e5f4a3b2c1d0e9f8a7b6c
+    secrets: inherit
+  mapping:
+    uses: other-org/infra/.github/workflows/deploy.yml@5f3b1c0d4e8a9b2c7d6e5f4a3b2c1d0e9f8a7b6c
+    secrets:
+      access-token: ${{ secrets.GITHUB_TOKEN }}
+      token: ${{ secrets.DEPLOY_TOKEN }}
+  empty:
+    uses: other-org/infra/.github/workflows/build.yml@5f3b1c0d4e8a9b2c7d6e5f4a3b2c1d0e9f8a7b6c
+    secrets:
+  emptyMap:
+    uses: other-org/infra/.github/workflows/build.yml@5f3b1c0d4e8a9b2c7d6e5f4a3b2c1d0e9f8a7b6c
+    secrets: {}
+  none:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	inherit, _ := file.Job("inherit")
+	if !inherit.Secrets.Declared || !inherit.Secrets.Inherit {
+		t.Errorf("secrets: inherit = %+v, want declared and inherit", inherit.Secrets)
+	}
+
+	mapping, _ := file.Job("mapping")
+	if !mapping.Secrets.Declared || mapping.Secrets.Inherit {
+		t.Errorf("secrets mapping = %+v, want declared and not inherit", mapping.Secrets)
+	}
+	if mapping.Secrets.Values.Len() != 2 {
+		t.Errorf("secrets mapping has %d entries, want 2", mapping.Secrets.Values.Len())
+	}
+	if entry, ok := mapping.Secrets.Values.Get("access-token"); !ok || entry.Text != "${{ secrets.GITHUB_TOKEN }}" {
+		t.Errorf("access-token = %+v, want the raw expression", entry)
+	}
+
+	// Present but empty is still declared. That is the distinction the rules
+	// need: a job with any secrets: key has been given the chance to hold
+	// credentials, and one without has not.
+	for _, id := range []string{"empty", "emptyMap"} {
+		job, _ := file.Job(id)
+		if !job.Secrets.Declared {
+			t.Errorf("job %s: secrets block not declared", id)
+		}
+		if job.Secrets.Inherit || job.Secrets.Values.Len() != 0 {
+			t.Errorf("job %s: secrets = %+v, want declared and empty", id, job.Secrets)
+		}
+	}
+
+	none, _ := file.Job("none")
+	if none.Secrets.Declared {
+		t.Error("a job with no secrets: key reported one")
+	}
+}
+
+func TestJobSecretsErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"unknown shorthand", "jobs:\n  a:\n    secrets: everything\n"},
+		{"nested mapping", "jobs:\n  a:\n    secrets:\n      outer:\n        inner: x\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := parse.Parse([]byte(tt.src)); err == nil {
+				t.Error("Parse accepted a malformed secrets: block")
+			}
+		})
+	}
+}
+
+// Grants is load bearing for rules 8 and 11, and write-all reaching id-token
+// is the kind of fact that is easy to assume the other way round. id-token only
+// offers write or none, so a write-all block does include it, and a read-all
+// block does not.
+func TestPermissionsGrantsAcrossScopes(t *testing.T) {
+	tests := []struct {
+		name  string
+		perms string
+		want  map[string]bool
+	}{
+		{
+			name:  "write-all covers everything, id-token included",
+			perms: "permissions: write-all\n",
+			want:  map[string]bool{"contents": true, "id-token": true, "packages": true},
+		},
+		{
+			name:  "read-all covers nothing at write level",
+			perms: "permissions: read-all\n",
+			want:  map[string]bool{"contents": false, "id-token": false, "packages": false},
+		},
+		{
+			name:  "an explicit map grants only what it lists",
+			perms: "permissions:\n  contents: read\n  id-token: write\n",
+			want:  map[string]bool{"contents": false, "id-token": true, "packages": false},
+		},
+		{
+			name:  "an empty block grants nothing",
+			perms: "permissions: {}\n",
+			want:  map[string]bool{"contents": false, "id-token": false, "packages": false},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := tt.perms + "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+			file, err := parse.Parse([]byte(src))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			perms, ok := file.PermissionsFor("a")
+			if !ok {
+				t.Fatal("PermissionsFor found no block")
+			}
+			for scope, want := range tt.want {
+				if got := perms.Grants(scope); got != want {
+					t.Errorf("Grants(%q) = %v, want %v (scope %q, level %q)", scope, got, want, perms.Scope, perms.Level)
+				}
+			}
+		})
+	}
+}
+
 func TestTriggersAbsent(t *testing.T) {
 	file, err := parse.Parse([]byte("jobs:\n  build:\n    steps:\n      - run: echo hi\n"))
 	if err != nil {

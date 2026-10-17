@@ -70,11 +70,16 @@ func (t Triggers) Events() []string {
 	return events
 }
 
-// Unfiltered reports whether the event has no branches filter at all.
+// Unfiltered reports whether the event has no ref or path filter at all.
 //
-// A branches-ignore list is still a filter, so it counts as filtered. Rule 7
+// An ignore list counts as a filter, and so do tags and so do paths: a push
+// that runs only for v* tags, or only when something under docs/ changes, is
+// restricted, and calling it an unfiltered push is a false positive. Rule 7
 // exists because an unfiltered push runs the workflow for every commit that
-// lands on any branch, and a filtered one does not.
+// lands anywhere in the repository, which is what a compromised maintainer
+// account needs and nothing else does.
 func (s TriggerSpec) Unfiltered() bool {
-	return len(s.Branches) == 0 && len(s.BranchesIgnore) == 0
+	return len(s.Branches) == 0 && len(s.BranchesIgnore) == 0 &&
+		len(s.Tags) == 0 && len(s.TagsIgnore) == 0 &&
+		len(s.Paths) == 0 && len(s.PathsIgnore) == 0
 }

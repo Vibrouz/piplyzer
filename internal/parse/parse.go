@@ -135,8 +135,26 @@ type Job struct {
 	Uses *UsesRef
 	// With are the inputs of a reusable workflow call, jobs.<id>.with. Same
 	// idea as a step's with: and parsed the same way.
-	With  Values
-	Steps []Step
+	With Values
+	// Secrets is the job's secrets: block. A reusable workflow call declares it
+	// to receive the caller's secrets, either as the inherit shorthand or as an
+	// explicit mapping, and either way the job ends up holding them.
+	Secrets Secrets
+	Steps   []Step
+}
+
+// Secrets is a job's secrets: block.
+type Secrets struct {
+	// Declared is true when the key is present, including when it is present
+	// but empty. That is the distinction that matters to the rules: a job with
+	// any secrets: block has credentials, and one without has none from here.
+	Declared bool
+	// Inherit is the `secrets: inherit` shorthand, which passes every secret the
+	// caller made available.
+	Inherit bool
+	// Values is the explicit mapping form, secrets: {token: ${{ secrets.X }}}.
+	Values Values
+	Line   int
 }
 
 // Step is one entry of a job's steps: list.
@@ -398,13 +416,17 @@ func (p *parser) job(node *yaml.Node, job *Job) error {
 			if job.With, err = p.values(entry.val, "job "+job.ID+" with"); err != nil {
 				return err
 			}
+		case "secrets":
+			if job.Secrets, err = p.secrets(entry.val); err != nil {
+				return err
+			}
 		case "steps":
 			if job.Steps, err = p.steps(entry.val, job.ID); err != nil {
 				return err
 			}
 		}
-		// needs, strategy, container, services, outputs, defaults, concurrency,
-		// and secrets are not read by any v1 rule.
+		// needs, strategy, container, services, outputs, defaults, and
+		// concurrency are not read by any v1 rule.
 	}
 	return nil
 }
@@ -534,6 +556,32 @@ func (p *parser) matrix(node *yaml.Node) (*Matrix, error) {
 		matrix.Entries = append(matrix.Entries, item)
 	}
 	return matrix, nil
+}
+
+// secrets reads a job's secrets: block, which is either the inherit shorthand
+// or a mapping of names to expressions.
+func (p *parser) secrets(node *yaml.Node) (Secrets, error) {
+	secrets := Secrets{Declared: true, Line: node.Line}
+
+	switch {
+	case p.isNull(node), node.Kind == yaml.SequenceNode:
+		// `secrets:` with nothing after it, or an empty list. Declared, but it
+		// passes nothing.
+	case node.Kind == yaml.ScalarNode:
+		if node.Value != "inherit" {
+			return Secrets{}, p.errf(node.Line, "secrets must be a mapping or \"inherit\", got %q", node.Value)
+		}
+		secrets.Inherit = true
+	case node.Kind == yaml.MappingNode:
+		values, err := p.values(node, "secrets")
+		if err != nil {
+			return Secrets{}, err
+		}
+		secrets.Values = values
+	default:
+		return Secrets{}, p.errf(node.Line, "secrets must be a mapping or \"inherit\", got %s", kindName(node.Kind))
+	}
+	return secrets, nil
 }
 
 func (p *parser) uses(node *yaml.Node) (UsesRef, error) {

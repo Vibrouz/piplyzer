@@ -1,0 +1,65 @@
+# Rule 8 (PPE-008): workflow_dispatch on a job that can reach credentials.
+#
+# A dormant privileged job. Nothing here looks wrong until someone triggers it.
+#
+# The workflow level permissions are read-all with no id-token, so jobs that
+# inherit them are not sensitive. Job level permissions replace the workflow
+# block rather than merging with it, so oidc is sensitive by its own block.
+#
+# Expected: 3 findings, all PPE-008, all Warn, one per sensitive job.
+#   line 22   secrets-inherit   its own secrets: block
+#   line 27   deploy-env        a secret in the job environment
+#   line 35   oidc              its own id-token: write
+#
+# build and docs are deliberately not sensitive and must not fire.
+on:
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  # Receives every secret the caller made available.
+  secrets-inherit:
+    uses: other-org/infra/.github/workflows/deploy.yml@5f3b1c0d4e8a9b2c7d6e5f4a3b2c1d0e9f8a7b6c
+    secrets: inherit
+
+  # Holds a token in its environment.
+  deploy-env:
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+    steps:
+      - run: ./deploy.sh
+
+  # Its own permissions block, overriding the workflow level one.
+  oidc:
+    permissions:
+      id-token: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@0123456789abcdef0123456789abcdef01234567
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/deploy
+
+  # A job that uses the workflow token is not sensitive. github.token and
+  # secrets.GITHUB_TOKEN are the same credential and it is available in every
+  # job, so referencing it does not make a job sensitive. Rule 11 owns the
+  # token question.
+  token-reader:
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh api repos/${{ github.repository }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  # No credentials anywhere. Dispatch on this one is a normal convenience.
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm ci
+      - run: npm test
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo built

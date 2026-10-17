@@ -1,0 +1,33 @@
+# Rule 10: uses: references pointing at code we do not scan.
+#
+# Expected: 3 Warn findings, all PPE-010.
+#
+# Three references, and they are the three shapes a reader meets: an ordinary
+# third-party action, a pinned one, and a whole other workflow. The local action
+# and the container step are here too and are not findings, because a local
+# action is code in this repository and a container is not a repository at all.
+name: third party references
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # The ordinary case. This is what nearly every repository has and it is the
+      # reason this rule is Warn rather than Block.
+      - uses: actions/cache@0123456789abcdef0123456789abcdef01234567
+
+      # Pinned to a commit, which settles repointing and nothing else. The
+      # finding fires anyway and says so, because a reader who has pinned is
+      # likely to think the question is closed.
+      - uses: some-org/internal-tool@0123456789abcdef0123456789abcdef01234567
+
+      # A whole other workflow, not an action. Same rule: we are not scanning it.
+      - uses: other-org/infra/.github/workflows/deploy.yml@main
+
+      # Not findings. A local action is code in this repository, which is the
+      # repository we do scan, and docker:// names an image rather than a repo.
+      - uses: ./build/action
+      - run: docker run --rm alpine:3.20 echo hi
