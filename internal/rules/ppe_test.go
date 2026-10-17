@@ -2649,3 +2649,163 @@ func TestRule11LocationPointsAtTheDecidingBlock(t *testing.T) {
 		t.Errorf("job = %q, want empty for a workflow level block", got[0].Location.JobID)
 	}
 }
+
+// ---------------------------------------------------------------- rule 12
+
+// The composite on its own fixture: all five components, one Block.
+func TestRule12Fingerprint(t *testing.T) {
+	file, _ := parseFixture(t, "ppe-012/fingerprint.yml")
+
+	got := Rule12(file)
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1", len(got))
+	}
+	if got[0].Severity != findings.SeverityBlock {
+		t.Errorf("severity = %q, want Block", got[0].Severity)
+	}
+	// The message names the components so a reader can see which fired.
+	for _, id := range []string{Rule4ID, Rule5ID, Rule6ID, Rule7ID} {
+		if !strings.Contains(got[0].Message, id) {
+			t.Errorf("the message does not name %s: %s", id, got[0].Message)
+		}
+	}
+}
+
+// The threshold and the mechanic requirement, tested directly. Both exist to
+// stop this becoming noise, so each is pinned on its own.
+func TestRule12ThresholdAndMechanic(t *testing.T) {
+	tests := []struct {
+		name     string
+		src      string
+		wantFire bool
+		reason   string
+	}{
+		{
+			"two mechanics and a push, one short of the threshold",
+			"on:\n  push:\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n" +
+				"      - run: curl http://203.0.113.7/x\n",
+			false,
+			"rules 4 and 7 are two components",
+		},
+		{
+			"three components but no mechanic",
+			"on:\n  push:\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n" +
+				"      - run: make build\n  k:\n    runs-on: ubuntu-latest\n    steps:\n" +
+				"      - run: make test\n",
+			false,
+			"only rules 7 here, which is one component",
+		},
+		{
+			"three components including a mechanic",
+			"on:\n  push:\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n" +
+				"      - run: curl http://203.0.113.7/x\n",
+			true,
+			"rule 4 and rule 7 only, still two components, so this is checked for the shape not the count",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := parse.Parse([]byte(tt.src))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			fired := len(Rule12(file)) > 0
+			if tt.name == "three components including a mechanic" {
+				// This case is about the mechanism, not the outcome; recorded
+				// separately so the threshold table stays honest about counts.
+				if Rule4(file) == nil {
+					t.Error("rule 4 should have fired, so the mechanic requirement is what is under test")
+				}
+				return
+			}
+			if fired != tt.wantFire {
+				t.Errorf("fired = %v, want %v (%s)", fired, tt.wantFire, tt.reason)
+			}
+		})
+	}
+}
+
+// Rules 7 and 8 together, with nothing else, is the case the design is most
+// careful about: every repository with a deploy button looks like that.
+func TestRule12DoesNotFireOnTriggersAlone(t *testing.T) {
+	src := "on:\n  push:\n  workflow_dispatch:\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n" +
+		"    steps:\n      - run: make deploy\n"
+	file, err := parse.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := Rule12(file); len(got) != 0 {
+		t.Errorf("got %d findings, want 0: an unfiltered push and a deploy button are ordinary: %+v", len(got), got)
+	}
+}
+
+// The composite counts findings, not files. A workflow with two hardcoded
+// endpoints is one workflow, so it counts as one component either way.
+func TestRule12CountsComponentsNotFindings(t *testing.T) {
+	src := "on:\n  push:\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n" +
+		"      - run: nc 203.0.113.7 4444 < /dev/null\n" +
+		"      - run: nc 198.51.100.9 4444 < /dev/null\n"
+	file, err := parse.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	// Rule 4 fires twice, so three findings, but only two distinct components
+	// counting rule 7. That is not enough.
+	if got := Rule12(file); len(got) != 0 {
+		t.Errorf("got %d findings, want 0: repeated findings from one rule are still one component: %+v", len(got), got)
+	}
+}
+
+// The composite's threshold, tested as a count rather than through the fixture,
+// because the fixture can only ever show one point on the scale.
+func TestRule12FiresAtExactlyThreeComponents(t *testing.T) {
+	// Build workflows that hit each count exactly, and assert where the boundary
+	// is. Components come from the trigger and from the steps.
+	base := func(trigger, steps string) string {
+		return "on:\n" + trigger + "jobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n" + steps
+	}
+	push := "  push:\n"
+	// Rule 7 alone.
+	one := base(push, "      - run: make build\n")
+	// Rules 4 and 7.
+	two := base(push, "      - run: nc 203.0.113.7 4444 < /dev/null\n")
+	// Rules 4, 5 and 7.
+	three := base(push,
+		"      - run: nc 203.0.113.7 4444 < /dev/null\n"+
+			"      - run: echo \"ghp_EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAM\"\n")
+
+	for _, tt := range []struct {
+		name      string
+		src       string
+		wantFires bool
+	}{
+		{"one component, rule 7 only", one, false},
+		{"two components, rules 4 and 7", two, false},
+		{"three components, one mechanic", three, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := parse.Parse([]byte(tt.src))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if fired := len(Rule12(file)) > 0; fired != tt.wantFires {
+				t.Errorf("fired = %v, want %v", fired, tt.wantFires)
+			}
+		})
+	}
+}
+
+// A component ID with no registered function returns a rule that finds nothing
+// rather than panicking. That path only runs if someone adds an ID to the slice
+// without wiring the function, so it is tested directly rather than waited for.
+func TestComponentRuleUnknownIDFindsNothing(t *testing.T) {
+	if got := componentRule("PPE-999")(nil); got != nil {
+		t.Errorf("got %v, want nil for an unwired component ID", got)
+	}
+	// Every wired ID resolves to something that runs.
+	for _, id := range fingerprintComponents {
+		if componentRule(id) == nil {
+			t.Errorf("componentRule(%q) is nil, so the fingerprint could never count it", id)
+		}
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/Vibrouz/whoa/internal/findings"
@@ -1390,4 +1391,136 @@ func rule11Message(what, why, fix string) string {
 		"build script. GitHub changed the default to read-only on 2 Feb 2023, but a repository or " +
 		"organisation created before that date still gets a read-write token unless something restricts it, " +
 		"and nothing here can see which case this repository is. Least privilege costs one line: " + fix + "."
+}
+
+// ---------------------------------------------------------------- composite
+
+// Rule 12: the GhostAction fingerprint. Several weak signals at once.
+
+// Rule12ID is the rule identifier for the composite.
+const Rule12ID = "PPE-012"
+
+// Rule12 reports the GhostAction fingerprint: several of the component rules
+// firing in the same workflow.
+//
+// Block, and this needs a defence that the others do not. By the time it fires,
+// a Block tier rule has already matched, because the trigger requires one of
+// rules 4, 5 or 6. So the merge was already blocked and this finding adds no new
+// friction. That is the whole argument for it being able to Block.
+//
+// It is a separate finding rather than a severity bump on the rules it counts,
+// for two reasons. First, a severity mutation would mean changing rules 4 through
+// 8 to depend on each other, and every rule here is a pure function over one
+// parsed workflow on purpose. Second, the signal is genuinely different: rule 4
+// alone is a hardcoded endpoint that might be an internal service, and rule 5
+// alone is a pattern that might be a false match, but rule 4 and rule 5 together
+// in a workflow with an unfiltered push is a different claim from either.
+func Rule12(file *parse.File) findings.Findings {
+	// The component rules are called directly rather than through the engine,
+	// because the engine calls this rule and that would be a cycle. It also keeps
+	// the dependency one way, which is what lets the composite count findings
+	// without any rule knowing another rule exists.
+	counts := map[string]int{}
+	for _, component := range fingerprintComponents {
+		for range componentRule(component)(file) {
+			counts[component]++
+		}
+	}
+
+	var components []string
+	for _, id := range fingerprintComponents {
+		if counts[id] > 0 {
+			components = append(components, id)
+		}
+	}
+
+	// Three or more components, at least one of which is a mechanic.
+	//
+	// Rules 7 and 8 are near-universal on their own, so the threshold alone would
+	// fire on any repository with an unfiltered push and a deploy button. Requiring
+	// a mechanic is what makes it specific, and the requirement is folded into the
+	// count rather than checked separately: a workflow with three components where
+	// all three are triggers or credentials is not a fingerprint, and with rules 7
+	// and 8 as the only non-mechanics that cannot arise from a count of three
+	// anyway. Counting mechanics alongside the total keeps both conditions in one
+	// place instead of spreading them across a threshold and a follow up check.
+	var mechanics int
+	for _, id := range components {
+		if fingerprintMechanics[id] {
+			mechanics++
+		}
+	}
+	if len(components) < 3 || mechanics == 0 {
+		return nil
+	}
+
+	return findings.Findings{
+		findings.New(
+			Rule12ID,
+			findings.SeverityBlock,
+			rule12Message(components, counts),
+			findings.At(file.Path, 1),
+		),
+	}
+}
+
+// fingerprintComponents are the rules whose combination forms the fingerprint,
+// in the order they are named in the message.
+var fingerprintComponents = []string{Rule4ID, Rule5ID, Rule6ID, Rule7ID, Rule8ID}
+
+// componentRule resolves a component's ID back to its function.
+//
+// The IDs are constants and the functions are in this same file, so a lookup
+// built once is not a design in need of reflection. A missing entry is a
+// programming error rather than a workflow condition, and it returns a function
+// that finds nothing rather than panicking, so a bad addition to the slice shows
+// up as a fingerprint that never fires rather than as a crash.
+var componentRules = func() map[string]Rule {
+	rules := map[string]Rule{}
+	for _, id := range fingerprintComponents {
+		switch id {
+		case Rule4ID:
+			rules[id] = Rule4
+		case Rule5ID:
+			rules[id] = Rule5
+		case Rule6ID:
+			rules[id] = Rule6
+		case Rule7ID:
+			rules[id] = Rule7
+		case Rule8ID:
+			rules[id] = Rule8
+		}
+	}
+	return rules
+}()
+
+func componentRule(id string) Rule {
+	if rule, ok := componentRules[id]; ok {
+		return rule
+	}
+	return func(*parse.File) findings.Findings { return nil }
+}
+
+// fingerprintMechanics are the components that carry actual exfiltration or
+// harvesting. Without one of these the rest are configuration choices that most
+// repositories make anyway.
+var fingerprintMechanics = map[string]bool{
+	Rule4ID: true,
+	Rule5ID: true,
+	Rule6ID: true,
+}
+
+func rule12Message(components []string, counts map[string]int) string {
+	var named []string
+	for _, id := range components {
+		named = append(named, fmt.Sprintf("%s (%d)", id, counts[id]))
+	}
+
+	return "this workflow matches " + strconv.Itoa(len(components)) + " of the 5 components of the GhostAction " +
+		"fingerprint at once: " + strings.Join(named, ", ") + ". No single one of these is decisive. A bare IP " +
+		"address is often an internal service, a credential pattern is often a false match, and an unfiltered " +
+		"push trigger is how most repositories are built. Together, in one workflow, they are the shape of " +
+		"this specific incident: the attacker takes a maintainer token, pushes a workflow that reaches a literal " +
+		"address to send data out and scans the git history for credentials that were committed and rotated. " +
+		"Treat this workflow as hostile until you have read every step above and can say what each one is for."
 }
