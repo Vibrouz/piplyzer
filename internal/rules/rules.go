@@ -11,7 +11,7 @@
 // A check that needs to know about another check does not reach for it. The
 // GhostAction composite is the one exception and takes the other rules' findings
 // as an argument, because counting findings from rules 4 through 8 is genuinely
-// its input; see decisions.md section 21.
+// its input.
 package rules
 
 import (

@@ -11,7 +11,7 @@ import (
 // rules cannot drift apart on them.
 
 // prEvents are the events that can bring contributor-influenced content into a
-// workflow. decisions.md section 18 fixes this set: dropping pull_request misses
+// workflow. The set is these three and no others: dropping pull_request misses
 // the common fork case, dropping pull_request_target misses the deliberate one,
 // and workflow_run runs a second workflow's job graph with a write token.
 var prEvents = []string{"pull_request", "pull_request_target", "workflow_run"}

@@ -322,8 +322,8 @@ func TestRule7FlagsUnfilteredPush(t *testing.T) {
 	if got[0].Location.JobID != "" || got[0].Location.StepNumber != 0 {
 		t.Errorf("location = %+v, want no job and no step", got[0].Location)
 	}
-	// No incident figure, because plan.md still has the GhostAction counts
-	// marked vendor-sourced pending confirmation.
+	// No incident figure, because the published GhostAction counts are
+	// vendor-sourced and unconfirmed.
 	if strings.Contains(got[0].Message, "772") || strings.Contains(got[0].Message, "2,577") {
 		t.Errorf("message quotes an unverified incident figure: %s", got[0].Message)
 	}
@@ -340,9 +340,8 @@ func TestRule7DoesNotFireWhenFiltered(t *testing.T) {
 }
 
 // Every way of writing a push trigger, and whether it counts as filtered. The
-// fixture covers branches because that is the case build_plan.md names; the
-// rest are inline because a workflow file has exactly one on: block, so each
-// shape needs its own.
+// branches case has its own fixture; the rest are inline because a workflow file
+// has exactly one on: block, so each shape needs its own.
 func TestRule7TriggerShapes(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -764,7 +763,7 @@ func TestRule2DoesNotFireOnTheSafeShapes(t *testing.T) {
 	}
 }
 
-// The plan.md pattern for this is github\.(event\.)?\w+[.\w]*\.(suffix), which
+// The obvious pattern for this, github\.(event\.)?\w+[.\w]*\.(suffix),
 // requires a dot before the suffix and so never matches github.head_ref or
 // github.ref. Those are the most common ref-suffix references there are, so this
 // pins that the matcher handles both shapes.
@@ -864,9 +863,10 @@ func contains(list []string, s string) bool {
 	return false
 }
 
-// plan.md puts name in the Block tier. It ships as Warn because it is the widest
-// of the ten and P2 has not measured it yet. This pins that decision so it
-// cannot be forgotten, and so promoting it later is a one line change.
+// name would otherwise be Block tier. It ships as Warn because it is the widest
+// of the ten and its false positive rate has not been measured yet. This pins
+// that decision so it cannot be forgotten, and so promoting it later is a one
+// line change.
 func TestNameSuffixIsHeldAtWarn(t *testing.T) {
 	if blockTierSuffixes["name"] {
 		t.Error("name is in the Block set: it is meant to be held at Warn until P2 measures it")

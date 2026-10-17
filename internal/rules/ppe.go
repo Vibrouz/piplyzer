@@ -10,8 +10,8 @@ import (
 	"github.com/Vibrouz/whoa/internal/parse"
 )
 
-// This file holds the PPE rules, in rule number order, which is the order
-// plan.md lists them in. One file rather than one per rule: the rules are
+// This file holds the PPE rules, in rule number order. One file rather than one
+// per rule: the rules are
 // independent by design and a reader looking for one wants to see it next to
 // its neighbours, not hunt through a directory of small files. What earns a
 // separate file is not "a rule" but "something that is not a pure function over
@@ -145,14 +145,14 @@ var blockTierSuffixes = map[string]bool{
 	"email":   true,
 }
 
-// heldAtWarnSuffixes are Block tier in plan.md but ship as Warn until P2
-// measures their false positive rate against real repositories.
+// heldAtWarnSuffixes would otherwise be Block tier, but ship as Warn until their
+// false positive rate is measured against real repositories.
 //
 // `name` belongs in this tier. It is the widest of the ten suffixes, and
 // blocking on an unmeasured suffix is the one way this rule could cost us the
 // gate. It is named explicitly here rather than left to the Warn fallback, so
 // that deleting the entry visibly promotes it to Block and the change is caught
-// rather than silent. decisions.md section 22 records it and how to reverse it.
+// rather than silent. To reverse it, delete the entry.
 var heldAtWarnSuffixes = map[string]bool{
 	"name": true,
 }
@@ -160,7 +160,7 @@ var heldAtWarnSuffixes = map[string]bool{
 // writeGatedContexts end in a Block tier suffix but cannot be reached by a fork
 // pull request, because creating a release, a milestone or a project already
 // requires write access. Reporting them as Block would be a false positive on
-// every repository that publishes releases. decisions.md section 22.
+// every repository that publishes releases.
 var writeGatedContexts = map[string]bool{
 	"github.event.release.name":               true,
 	"github.event.milestone.title":            true,
@@ -173,13 +173,12 @@ var writeGatedContexts = map[string]bool{
 //
 // The path handles both shapes GitHub uses: github.head_ref, where the property
 // follows the context directly, and github.event.issue.title, where several
-// segments come first. plan.md writes this as
-// `github\.(event\.)?\w+[.\w]*\.(suffix)`, which requires a dot before the
-// suffix and so never matches github.head_ref or github.ref, the most common
-// ref-suffix references there are. The path is captured and its final segment
-// compared instead. The [n] alternation is for list contexts such as
+// segments come first. The obvious spelling for this,
+// `github\.(event\.)?\w+[.\w]*\.(suffix)`, requires a dot before the suffix
+// and so never matches github.head_ref or github.ref, the most common ref-suffix
+// references there are. The path is captured and its final segment compared
+// instead. The [n] alternation is for list contexts such as
 // github.event.commits[0].message and github.event.pages[0].page_name.
-// decisions.md section 22 records the regex bug.
 var githubContext = regexp.MustCompile(`github((?:\.[A-Za-z0-9_-]+|\[[0-9]+\])+)`)
 
 // Rule2 reports untrusted context interpolated into a run: block.
@@ -440,8 +439,8 @@ var networkCommand = regexp.MustCompile(
 // it: a network command, or the IP being a URL's host. That is the fix for the
 // false positive that matters here, because four part version strings are
 // everywhere in Java and Gradle builds and a Block tier rule that fires on
-// `-Dversion=1.2.3.4` would block legitimate repositories, which is the failure
-// decisions.md section 9 says costs us the whole gate.
+// `-Dversion=1.2.3.4` would block legitimate repositories, and a gate that does
+// that gets disabled, which costs us the rules that matter.
 //
 // An IP in a URL *path* is reported too, at Warn. It is usually a version, so it
 // does not block, but it is not nothing either: an attacker who wants rule 4 to
@@ -886,8 +885,8 @@ func jobHarvestSignals(job parse.Job) (deepCheckout, historyScan bool) {
 // git log needs a patch flag to count. A bare `git log` prints one line per
 // commit, which is what a changelog job does and is entirely legitimate; it is
 // the patch output that dumps diffs, and a diff contains every secret that was
-// ever committed, including ones rotated long ago that still work. plan.md names
-// `git log -p`, `git rev-list` and `git show` for exactly this reason.
+// ever committed, including ones rotated long ago that still work. That is why
+// the three are `git log -p`, `git rev-list` and `git show`.
 //
 // The patch flag may be grouped, as in -up, and is matched as a short flag group
 // containing p rather than as the literal string "-p".
@@ -943,11 +942,11 @@ func Rule7(file *parse.File) findings.Findings {
 }
 
 func rule7Message() string {
-	// No incident figure is quoted here on purpose. plan.md still has the
-	// GhostAction counts marked vendor-sourced pending confirmation, and
-	// decisions.md requires a source for any figure that reaches a user. The
-	// mechanism is what matters here and it is not in doubt: a stolen maintainer
-	// token pushes to the default branch and the workflow runs.
+	// No incident figure is quoted here on purpose. The counts published for
+	// GhostAction are vendor-sourced and unconfirmed, and a figure that reaches a
+	// user needs a primary source. The mechanism is what matters here and it is
+	// not in doubt: a stolen maintainer token pushes to the default branch and
+	// the workflow runs.
 	return "on: push has no branches, tags or paths filter, so this workflow runs for every commit that " +
 		"lands on any branch in the repository. That is the entry point for a compromised maintainer " +
 		"account: the attacker pushes a malicious workflow straight to the default branch, there is no " +
@@ -1013,15 +1012,15 @@ const Rule9ID = "PPE-009"
 // there is the ordinary way to test a pull request. That workflow is not this
 // finding, and matching it would be matching most of GitHub Actions.
 //
-// Block. plan.md is right that there is no CVE-scale incident here, and it is
-// also right that the miss is total compromise: a fork contributor opens a pull
-// request, the workflow checks their code out, and their code runs with the
-// repository's secrets and a write-scoped token. There is no partial credit.
+// Block. There is no CVE-scale incident here, but the miss is total compromise:
+// a fork contributor opens a pull request, the workflow checks their code out,
+// and their code runs with the repository's secrets and a write-scoped token.
+// There is no partial credit.
 //
-// The shell-command shape is narrower than plan.md asked for, deliberately.
-// plan.md said any `git fetch` counts, and blocking that blocked real workflows
-// doing the documented hardening move of fetching the trusted base. See the
-// comment on prFetchRef for the split that replaced it.
+// The shell-command shape is narrower than the obvious one, deliberately. Any
+// `git fetch` at all would flag real workflows doing the documented hardening
+// move of fetching the trusted base. See the comment on prFetchRef for the split
+// that replaced it.
 func Rule9(file *parse.File) findings.Findings {
 	if !pwnRequestTrigger(file) {
 		return nil
@@ -1079,8 +1078,8 @@ var (
 // workflow_run plus an artifact download as the safe replacement for
 // pull_request_target, CodeQL documents the same pair, and it is how real
 // pipelines promote a build to a deploy job. A Block finding on the officially
-// blessed pattern is a finding with no way to act on it, which is the failure
-// mode decisions.md section 9 says costs us the gate.
+// blessed pattern is a finding with no way to act on it, and a gate that
+// produces findings nobody can resolve gets disabled.
 //
 // That leaves an artifact hand-off undetected, deliberately. CodeQL's
 // actions-untrusted-checkout queries already cover it, and cross workflow

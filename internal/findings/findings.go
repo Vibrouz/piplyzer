@@ -27,9 +27,9 @@ const RulesetVersion = "1.0.0"
 
 // Severity is the triage tier of a finding.
 //
-// Only the two tiers v1 produces are defined. decisions.md describes an Info
-// tier as well, but no check emits one, and a severity that nothing can produce
-// would be a third case for every consumer of this package to handle.
+// Only the two tiers this tool produces are defined. An Info tier would be a
+// third case for every consumer of this package to handle, and no check emits
+// one, so it is left out rather than defined and never used.
 type Severity string
 
 const (
