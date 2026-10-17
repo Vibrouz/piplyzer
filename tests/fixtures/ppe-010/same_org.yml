@@ -1,0 +1,25 @@
+# Rule 10 against a known repository, so the same-org case is distinguishable.
+#
+# Expected: 2 Warn findings, all PPE-010: one same-org, one third-party.
+#
+# The owner comes from GITHUB_REPOSITORY when the tool runs in CI. Without it a
+# directory scan cannot tell a colleague's repository from a stranger's, which
+# is why that case gets its own message rather than being lumped in with the
+# third-party one.
+name: same org references
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # Same organisation, and a different repository we are not scanning.
+      - uses: our-org/shared-actions@0123456789abcdef0123456789abcdef01234567
+
+      # A genuinely different organisation.
+      - uses: third-party/thing@0123456789abcdef0123456789abcdef01234567
+
+      # Not a finding: this is this repository's own code.
+      - uses: ./local-thing

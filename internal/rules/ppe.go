@@ -1172,3 +1172,95 @@ func rule9Message(why string) string {
 		"the event metadata rather than its code, and gate the privileged work behind an environment with " +
 		"required reviewers so a human sees the author before the job runs."
 }
+
+// ---------------------------------------------------------------- rule 10
+
+// Rule 10: cross-repo transitivity. A uses: we cannot read.
+
+// Rule10ID is the rule identifier for rule 10.
+const Rule10ID = "PPE-010"
+
+// Rule10 reports a reference to code that lives in another repository, which is
+// code this tool does not scan.
+//
+// Warn, not Block, because third-party actions are near-universal. Most
+// repositories use actions they did not write, and a Block tier rule that fires
+// on all of them is a Block tier rule that fires on most of GitHub Actions. This
+// names a limit rather than a mistake: the code runs with the repository's
+// secrets and we have no visibility into what it contains.
+//
+// It is a standalone finding rather than a modifier on rule 1. It emits on its
+// own whenever a reference points outside this repository, INCLUDING when the
+// ref is already SHA pinned, because that is a separate signal and a useful one.
+// Pinning answers "can this ref be repointed under me"; this answers "what is in
+// there", which pinning does not answer at all. A pinned reference to an
+// unreadable repository is still unreadable.
+//
+// Keeping it independent is also what lets every rule stay a pure
+// func(workflow) []Finding, so each fixture asserts its own finding count
+// without coordinating with rule 1's.
+func Rule10(file *parse.File) findings.Findings {
+	var out findings.Findings
+	for _, site := range allUses(file) {
+		repo, _, ref := site.ref.Parts()
+		// A local action is code in this repository, which we do scan. A
+		// container is not a repository reference at all. Neither is a hop.
+		if repo == "" || strings.HasPrefix(repo, "docker://") {
+			continue
+		}
+		out = append(out, findings.New(
+			Rule10ID,
+			findings.SeverityWarn,
+			rule10Message(file, repo, ref),
+			site.location(file),
+		))
+	}
+	return out
+}
+
+// rule10Message explains the finding, and distinguishes the cases a reader can
+// act on differently.
+//
+// The same-org case is worth calling out because it is the one where a reader can
+// usually do something: the code is in an organisation they administer and can
+// read, and in many cases it is a repository their own team owns. It stays Warn
+// rather than dropping to a lower tier, because a two-tier scheme has nowhere
+// lower to go and inventing a third tier for this would give every consumer a
+// third case to handle. The message says what kind of reference it is so the
+// reader can judge, which is the part the tier cannot express.
+func rule10Message(file *parse.File, repo, ref string) string {
+	owner, _, _ := strings.Cut(repo, "/")
+
+	var intro string
+	switch {
+	case file.Repository.IsZero():
+		intro = fmt.Sprintf(
+			"%s is code from another repository, and this run is scanning a directory rather than a named "+
+				"repository, so the tool cannot tell whether it is a third party. Either way it is not being "+
+				"scanned: only this repository's workflows are. ", repo)
+	case strings.EqualFold(owner, file.Repository.Owner):
+		intro = fmt.Sprintf(
+			"%s is in your own organisation (%s), which this run is not scanning. It is usually readable by "+
+				"your team, so the review is a matter of reading it rather than trusting it blind. ", repo,
+			file.Repository.Owner)
+	default:
+		intro = fmt.Sprintf(
+			"%s is code from a third-party repository. ", repo)
+	}
+
+	// Pinning is worth naming either way, because a reader who has pinned is
+	// likely to think the question is already settled, and it is not.
+	pinned := ""
+	if commitSHA.MatchString(ref) {
+		pinned = " The reference is pinned to a commit, which settles whether the ref can be repointed under " +
+			"you, and does nothing about whether the contents are safe. Those are different questions."
+	} else if ref != "" {
+		pinned = fmt.Sprintf(" It is referenced as %s, a mutable ref, so the content can change without this "+
+			"repository changing anything.", ref)
+	}
+
+	return intro + "That code runs with this repository's secrets and token inside the job that uses it, and " +
+		"no rule in this tool looks inside another repository, so nothing here can tell you what it does." +
+		pinned + " Pinning to a commit is the control that matters for supply chain; auditing the repository is " +
+		"the control that matters for trust, and this finding is the second one, not a substitute for the first."
+}
