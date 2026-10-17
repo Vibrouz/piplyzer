@@ -379,7 +379,7 @@ func Rule4(file *parse.File) findings.Findings {
 			loc := site.location(file)
 			loc.Line = site.lineAt(match.offset)
 			sev := findings.SeverityBlock
-			if match.kind == endpointHTTP {
+			if match.kind == endpointHTTP || match.kind == endpointIPInPath {
 				sev = findings.SeverityWarn
 			}
 			out = append(out, findings.New(Rule4ID, sev, rule4Message(match), loc))
@@ -391,7 +391,14 @@ func Rule4(file *parse.File) findings.Findings {
 type endpointKind int
 
 const (
+	// endpointIP is a bare address something is going to connect to: a URL host,
+	// or an address beside a network command. Block.
 	endpointIP endpointKind = iota
+	// endpointIPInPath is a dotted quad inside the path of a URL. It is usually
+	// a version, so it is Warn and not Block.
+	endpointIPInPath
+	// endpointHTTP is a plain http:// URL to any host. Warn: it is a real risk,
+	// but a plaintext internal endpoint is often legitimate.
 	endpointHTTP
 )
 
@@ -429,34 +436,48 @@ var networkCommand = regexp.MustCompile(
 
 // literalEndpointMatches finds literal endpoints in a script.
 //
-// A bare IP is only reported when it sits on a line that also contains a network
-// command, or when it is the host of a URL. That is the fix for the false
-// positive that matters here: four part version strings are everywhere in Java
-// and Gradle builds, and a Block tier rule that fires on `-Dversion=1.2.3.4`
-// would block legitimate repositories, which is the failure decisions.md section
-// 9 says costs us the whole gate.
+// A bare IP is only reported when something on the line is going to connect to
+// it: a network command, or the IP being a URL's host. That is the fix for the
+// false positive that matters here, because four part version strings are
+// everywhere in Java and Gradle builds and a Block tier rule that fires on
+// `-Dversion=1.2.3.4` would block legitimate repositories, which is the failure
+// decisions.md section 9 says costs us the whole gate.
+//
+// An IP in a URL *path* is reported too, at Warn. It is usually a version, so it
+// does not block, but it is not nothing either: an attacker who wants rule 4 to
+// stay quiet has exactly one move available, which is to put a dotted quad in
+// the path of the URL, and that should leave a trace rather than no finding.
+// The trade is a Warn on legitimate versioned download URLs, which is the right
+// side of it: Warn annotates and does not block.
 func literalEndpointMatches(script string) []endpointMatch {
 	var out []endpointMatch
 
 	for _, line := range scriptLines(script) {
 		text, offset := line.text, line.offset
 		hasNetworkCommand := networkCommand.MatchString(text)
+		spans := urlSpans(text)
 
-		// A URL with an IP host carries network context on its own, since the
-		// scheme is right there in front of it. Otherwise the line needs a
-		// network command, which is what keeps -Dversion=1.2.3.4 quiet.
 		for _, loc := range ipv4Literal.FindAllStringIndex(text, -1) {
-			if insideURLPath(text, loc[0]) {
-				continue
-			}
-			if !hasNetworkCommand && !insideURLHost(text, loc[0]) {
-				continue
-			}
-			out = append(out, endpointMatch{
-				kind:       endpointIP,
+			match := endpointMatch{
 				expression: text[loc[0]:loc[1]],
 				offset:     offset + loc[0],
-			})
+			}
+			switch placeIP(spans, loc[0]) {
+			case ipURLHost:
+				// The scheme is the network context, so no command needed.
+				match.kind = endpointIP
+			case ipURLPath:
+				if !hasNetworkCommand {
+					continue
+				}
+				match.kind = endpointIPInPath
+			default:
+				if !hasNetworkCommand {
+					continue
+				}
+				match.kind = endpointIP
+			}
+			out = append(out, match)
 		}
 
 		for _, loc := range httpLiteral.FindAllStringIndex(text, -1) {
@@ -494,43 +515,84 @@ func scriptLines(script string) []scriptLine {
 	return lines
 }
 
-// insideURLPath reports whether an offset is in the path or query of a URL
-// rather than in its host.
-//
-// curl https://host/1.2.3.4/tool carries a network command and a dotted quad
-// that looks like an address, and is neither: it is a version in a path. A URL
-// host ends at the first slash after the scheme, so anything past that slash is
-// path.
-func insideURLPath(line string, offset int) bool {
-	before := line[:offset]
-	at := strings.LastIndex(before, "://")
-	if at < 0 {
-		return false
-	}
-	host := before[at+3:]
-	return strings.ContainsAny(host, "/\t \"'")
+// anyURL matches http and https URLs. Used to work out where an address sits
+// inside a URL, so it has to cover https as well as the http that
+// httpLiteral reports on.
+var anyURL = regexp.MustCompile(`\bhttps?://[^\s"'<>|)\]` + "`" + `]+`)
+
+// urlSpan is one URL in a line: the byte range it occupies, and where its path
+// begins. pathOffset is -1 when the URL has no path, as in http://1.2.3.4.
+type urlSpan struct {
+	start, end int
+	pathOffset int
 }
 
-// insideURLHost reports whether an offset is the host part of a URL, so that a
-// bare IP used as a host is reported once, as the URL, not twice.
-func insideURLHost(line string, offset int) bool {
-	before := line[:offset]
-	at := strings.LastIndex(before, "://")
-	if at < 0 {
-		return false
+// urlSpans finds the URLs in a line.
+//
+// The URLs are located rather than reconstructed from a backwards search for
+// "://" because a backwards search cannot tell an address inside a path from an
+// address that merely follows a URL. In `curl http://host/x 1.2.3.4`, the
+// 1.2.3.4 is a second argument to curl and nothing to do with the path, and a
+// backwards search reads it as path.
+func urlSpans(line string) []urlSpan {
+	var spans []urlSpan
+	for _, loc := range anyURL.FindAllStringIndex(line, -1) {
+		span := urlSpan{start: loc[0], end: loc[1], pathOffset: -1}
+		// The path starts at the first /, ? or # after the scheme and the host.
+		// The scheme's own slashes have to be skipped, or every URL looks like
+		// it has a path starting inside "://" and every host reads as a path.
+		host := line[loc[0]:loc[1]]
+		if colon := strings.Index(host, "://"); colon >= 0 {
+			if at := strings.IndexAny(host[colon+3:], "/?#"); at >= 0 {
+				span.pathOffset = loc[0] + colon + 3 + at
+			}
+		}
+		spans = append(spans, span)
 	}
-	// Nothing but the scheme and the optional credentials between the :// and
-	// the address.
-	host := before[at+3:]
-	return host == "" || !strings.ContainsAny(host, " \t/\"'")
+	return spans
+}
+
+// ipPlacement is where an address sits relative to any URL on its line.
+type ipPlacement int
+
+const (
+	// ipStandalone is an address that is not part of a URL at all.
+	ipStandalone ipPlacement = iota
+	// ipURLHost is the host: curl http://1.2.3.4/x
+	ipURLHost
+	// ipURLPath is after the first slash of a URL: curl https://host/1.2.3.4/x
+	ipURLPath
+)
+
+func placeIP(spans []urlSpan, offset int) ipPlacement {
+	for _, span := range spans {
+		if offset < span.start || offset >= span.end {
+			continue
+		}
+		if span.pathOffset < 0 || offset < span.pathOffset {
+			return ipURLHost
+		}
+		return ipURLPath
+	}
+	return ipStandalone
 }
 
 func rule4Message(match endpointMatch) string {
-	if match.kind == endpointHTTP {
+	switch match.kind {
+	case endpointHTTP:
 		return fmt.Sprintf(
 			"%s is a plain http:// address in a script. Anything sent to it, including a token or a secret read "+
 				"from the environment, travels in the clear and can be read by anything on the path. If this is an "+
 				"internal endpoint that genuinely cannot serve https, say so in a comment, otherwise use https.",
+			match.expression,
+		)
+	case endpointIPInPath:
+		return fmt.Sprintf(
+			"%s is an IP address in the path or query of a URL that this script fetches. This is usually a "+
+				"version number and this finding is a warning rather than a block for that reason. It is "+
+				"reported anyway because an address there is the one place to hide an address from a scanner "+
+				"that looks at URL hosts, and that is worth a human glance. If it really is a version, it "+
+				"belongs in a variable named like one.",
 			match.expression,
 		)
 	}

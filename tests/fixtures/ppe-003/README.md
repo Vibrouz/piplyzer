@@ -2,7 +2,7 @@
 #
 # | Fixture                        | Expected | What it pins down                              |
 # |--------------------------------|----------|------------------------------------------------|
-# | ppe-003/malicious.yml          | 9 (7 Block, 2 Warn) | rules 3, 4 and 5 together in one workflow |
+# | ppe-003/malicious.yml          | 13 (9 Block, 4 Warn) | rules 3, 4 and 5 together in one workflow |
 # | ppe-006/correlated.yml         | 3 Block  | rule 6, both signals in the same job          |
 # | ppe-006/split_job.yml          | 0        | rule 6, the signals in different jobs         |
 #
@@ -24,7 +24,8 @@
 # Two things in `ppe-003/malicious.yml` are honest limitations rather than clean
 # negatives, and are labelled in the file:
 #
-# - `echo "building 1.2.3.4"` DOES match rule 4. A version string shaped like an
-#   address is indistinguishable from an address.
+# - Rule 4 reads literal script text and cannot follow indirection, so
+#   `IP=198.51.100.42` on one line and `curl $IP` on the next is not reported.
+#   The same applies to the secret patterns in rule 5.
 # - The `clean` job's `AKIA_REGION` and `sk-directory` do not match rule 5,
 #   because the patterns require the credential body, not just the prefix.

