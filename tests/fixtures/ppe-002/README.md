@@ -17,12 +17,12 @@
 #
 # The matcher handles two shapes of context reference: `github.head_ref`, where
 # the property follows the context directly, and `github.event.issue.title`,
-# where several segments come first. The pattern printed in plan.md
-# (`github\.(event\.)?\w+[.\w]*\.(suffix)`) requires a dot before the suffix and
+# where several segments come first. The obvious pattern for this,
+# `github\.(event\.)?\w+[.\w]*\.(suffix)`, requires a dot before the suffix and
 # therefore does not match `github.head_ref` or `github.ref`, which are the most
-# common ref-suffix references there are. `decisions.md` section 22 records it.
+# common ref-suffix references there are.
 #
-# `name` is Block tier in `plan.md` but ships as Warn until P2 measures it
-# against real repositories. It is the widest of the ten suffixes and blocking
-# on an unmeasured suffix is the one way this rule could cost us the gate.
-# `decisions.md` section 22.
+# `name` would otherwise be Block tier but ships as Warn until its false
+# positive rate is measured against real repositories. It is the widest of the
+# ten suffixes and blocking on an unmeasured suffix is the one way this rule
+# could cost us the gate.

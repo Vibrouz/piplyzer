@@ -44,9 +44,9 @@ jobs:
           echo "comment: ${{ github.event.comment.body }}"
           echo "branch: ${{ github.head_ref }}"
 
-  # release.name and milestone.title end in Block tier suffixes, but creating a
-  # release or a milestone already requires write access, so they are Warn
-  # rather than Block. decisions.md section 22.
+  # release.name and milestone.title would be Block tier, but creating a release
+  # or a milestone already requires write access, so they are Warn rather than
+  # Block.
   release:
     runs-on: ubuntu-latest
     steps:

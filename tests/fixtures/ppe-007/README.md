@@ -3,7 +3,7 @@
 # | Fixture      | Expected        | What it pins down                        |
 # |--------------|-----------------|------------------------------------------|
 # | unfiltered.yml | 1 PPE-007, Warn | push with no filters at all             |
-# | filtered.yml   | 0             | a `branches:` filter, the case build_plan.md names |
+# | filtered.yml   | 0             | a `branches:` filter                            |
 #
 # Warn, not Block. An unfiltered push is extremely common and often deliberate,
 # so blocking it would be noise on a gate that has to survive contact with real

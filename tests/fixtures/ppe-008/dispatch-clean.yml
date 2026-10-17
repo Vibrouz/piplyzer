@@ -7,11 +7,10 @@
 # privileged behind it is how deploy buttons are built, and flagging it would
 # fire on a large share of legitimate repositories.
 #
-# Note what is NOT here: a job referencing github.token. plan.md defines any
-# job that references secrets.* or github.token as sensitive, so such a job
-# fires, and ordinary API-calling workflows do reference it. That is a false
-# positive source worth knowing about, covered by a test rather than hidden
-# here.
+# Note what is NOT here: a job referencing github.token. Any job that references
+# secrets.* or github.token would be treated as sensitive, so such a job fires,
+# and ordinary API-calling workflows do reference it. That is a false positive
+# source worth knowing about, covered by a test rather than hidden here.
 on:
   workflow_dispatch:
 

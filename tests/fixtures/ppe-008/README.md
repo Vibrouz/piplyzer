@@ -24,6 +24,6 @@
 #   level and all five jobs fired, which was the inheritance working correctly.
 # - `secrets:` with nothing after it still counts as declared. A job with any
 #   `secrets:` key has been given the chance to hold credentials.
-# - A job referencing `github.token` counts as sensitive, per plan.md. Ordinary
+# - A job referencing `github.token` counts as sensitive. Ordinary
 #   API-calling workflows do reference it, so this is a known false positive
 #   source and it is covered by a test rather than hidden from the fixture.
