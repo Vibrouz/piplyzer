@@ -405,22 +405,71 @@ func TestRulesRunThroughTheEngine(t *testing.T) {
 		fixture string
 		ids     []string
 	}{
-		{"ppe-001/unpinned.yml", []string{Rule1ID, Rule1ID, Rule1ID, Rule1ID}},
-		{"ppe-001/pinned.yml", nil},
+		// Rule 1 speaks about the ref, rule 10 about the contents, and neither
+		// suppresses the other. Pinning the refs in this next fixture silences
+		// rule 1 and not rule 10, which is the whole argument for the two rules
+		// being separate.
+		{
+			"ppe-001/unpinned.yml",
+			[]string{
+				Rule1ID, Rule10ID,
+				Rule1ID, Rule10ID,
+				Rule1ID, Rule10ID,
+				Rule1ID, Rule10ID,
+			},
+		},
+		{"ppe-001/pinned.yml", []string{Rule10ID, Rule10ID, Rule10ID, Rule10ID}},
 		{"ppe-007/unfiltered.yml", []string{Rule7ID}},
 		{"ppe-007/filtered.yml", nil},
-		{"ppe-008/dispatch-sensitive.yml", []string{Rule8ID, Rule8ID, Rule8ID}},
-		{"ppe-008/dispatch-clean.yml", nil},
-		// The fixture's title echo is a real rule 2 finding, so it is in the
-		// expected sequence rather than papered over by removing the line.
-		{"ppe-009/pwn_request.yml", []string{Rule9ID, Rule2ID, Rule9ID, Rule9ID, Rule9ID}},
-		{"ppe-009/workflow_run.yml", nil},
-		{"ppe-009/negatives.yml", nil},
+		{
+			"ppe-008/dispatch-sensitive.yml",
+			[]string{Rule8ID, Rule10ID, Rule8ID, Rule8ID, Rule10ID},
+		},
+		{"ppe-008/dispatch-clean.yml", []string{Rule10ID}},
+		// Rule 9 finds the four privileged fetches, rule 2 the title echo, and
+		// rule 10 the four external references: three checkout actions plus the
+		// fork checkout whose repository: points at the attacker's copy. That
+		// last one is both a rule 9 and a rule 10 finding, which is the point:
+		// rule 9 says the job is privileged and runs fork code, rule 10 says the
+		// reference points somewhere this run is not scanning.
+		{
+			"ppe-009/pwn_request.yml",
+			[]string{
+				Rule10ID, Rule9ID, Rule2ID, Rule10ID, Rule9ID,
+				Rule10ID, Rule9ID, Rule9ID,
+			},
+		},
+		// One hop, from the trusted checkout that makes the artifact hand-off
+		// pattern safe. Rule 9 is quiet about the pattern and rule 10 is not
+		// quiet about the checkout, which is the correct division.
+		{"ppe-009/workflow_run.yml", []string{Rule10ID}},
+		// Four hops from the four base-branch checkouts. This fixture asserts
+		// that rule 9 stays quiet on a privileged trigger with no untrusted
+		// fetch, and rule 10's opinion about the checkouts is independent.
+		{
+			"ppe-009/negatives.yml",
+			[]string{Rule10ID, Rule10ID, Rule10ID, Rule10ID},
+		},
 		{"ppe-002/injected.yml", []string{Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID}},
-		{"ppe-002/safe.yml", nil},
-		{"ppe-006/split_job.yml", nil},
+		// One hop, from the fake action the fixture checks out. The fixture is
+		// about rule 2 finding nothing, and rule 10 has its own opinion about
+		// the same line, which is fine.
+		{"ppe-002/safe.yml", []string{Rule10ID}},
+		{
+			"ppe-006/split_job.yml",
+			[]string{Rule10ID, Rule10ID, Rule10ID, Rule10ID},
+		},
 		{"ppe-003/legitimate.yml", []string{Rule4ID, Rule4ID, Rule4ID}},
 		{"ppe-009/base_fetch.yml", nil},
+		// Three rule 10 hops, plus a rule 1 finding for the reusable workflow
+		// reference, which is on a mutable ref rather than a SHA. Two rules,
+		// two different questions about the same line, and neither suppresses
+		// the other.
+		{
+			"ppe-010/third_party.yml",
+			[]string{Rule10ID, Rule10ID, Rule1ID, Rule10ID},
+		},
+		{"ppe-010/same_org.yml", []string{Rule10ID, Rule10ID}},
 		{
 			"ppe-003/malicious.yml",
 			[]string{
@@ -430,8 +479,17 @@ func TestRulesRunThroughTheEngine(t *testing.T) {
 			},
 		},
 		{
+			// The three rule 6 findings, interleaved with a rule 10 finding for
+			// each actions/checkout. Those are SHA pinned, so rule 1 stays
+			// quiet, but they are still references into a repository this run
+			// does not scan, which is the whole point of rule 10. A pinned
+			// reference is still an unreadable one.
 			"ppe-006/correlated.yml",
-			[]string{Rule6ID, Rule6ID, Rule6ID},
+			[]string{
+				Rule6ID, Rule10ID,
+				Rule6ID, Rule10ID,
+				Rule6ID, Rule10ID,
+			},
 		},
 	}
 
@@ -2172,6 +2230,189 @@ func TestPRFetchRefSpellings(t *testing.T) {
 	} {
 		if prFetchRef.MatchString(ref) {
 			t.Errorf("prFetchRef should not match the base ref %q", ref)
+		}
+	}
+}
+
+// ---------------------------------------------------------------- rule 10
+
+// Rule 10 on the two fixture shapes.
+func TestRule10ThirdPartyReferences(t *testing.T) {
+	file, data := parseFixture(t, "ppe-010/third_party.yml")
+
+	assertFindings(t, Rule10(file), []want{
+		{Rule10ID, findings.SeverityWarn, lineOf(t, data, "actions/cache@")},
+		{Rule10ID, findings.SeverityWarn, lineOf(t, data, "some-org/internal-tool@")},
+		{Rule10ID, findings.SeverityWarn, lineOf(t, data, "other-org/infra/")},
+	})
+}
+
+// The same-org case, which needs a known repository, since a directory scan
+// cannot tell a colleague's repository from a stranger's.
+func TestRule10SameOrgReference(t *testing.T) {
+	data := fixtureBytes(t, "ppe-010/same_org.yml")
+	file, err := parse.ParseWorkflow(".github/workflows/same_org.yml", parse.Repository{Owner: "our-org", Name: "whoa"}, data)
+	if err != nil {
+		t.Fatalf("ParseWorkflow: %v", err)
+	}
+
+	got := Rule10(file)
+	if len(got) != 2 {
+		t.Fatalf("got %d findings, want 2", len(got))
+	}
+	if got[0].Severity != findings.SeverityWarn || got[1].Severity != findings.SeverityWarn {
+		t.Errorf("both findings should be Warn, got %q and %q", got[0].Severity, got[1].Severity)
+	}
+	// The same-org one names the organisation, which is what makes it actionable.
+	if !strings.Contains(got[0].Message, "your own organisation") {
+		t.Errorf("the same-org message does not say so: %s", got[0].Message)
+	}
+	if !strings.Contains(got[0].Message, "our-org") {
+		t.Errorf("the same-org message does not name the owner: %s", got[0].Message)
+	}
+	// And the third-party one does not claim to be same-org.
+	if strings.Contains(got[1].Message, "your own organisation") {
+		t.Errorf("the third-party message claims same-org: %s", got[1].Message)
+	}
+}
+
+// Without a known repository the rule cannot distinguish the two, and says so
+// rather than guessing. Every reference is still reported.
+func TestRule10WithoutAKnownRepository(t *testing.T) {
+	data := fixtureBytes(t, "ppe-010/same_org.yml")
+	file, err := parse.ParseWorkflow(".github/workflows/same_org.yml", parse.Repository{}, data)
+	if err != nil {
+		t.Fatalf("ParseWorkflow: %v", err)
+	}
+
+	got := Rule10(file)
+	if len(got) != 2 {
+		t.Fatalf("got %d findings, want 2: both references are still hops", len(got))
+	}
+	for _, f := range got {
+		if !strings.Contains(f.Message, "scanning a directory") {
+			t.Errorf("the message does not explain the missing context: %s", f.Message)
+		}
+	}
+}
+
+// Local actions and containers are not hops. A local action is code in this
+// repository, which is the one we scan.
+func TestRule10IgnoresLocalAndContainerReferences(t *testing.T) {
+	src := "on:\n  push:\n    branches: [main]\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n" +
+		"      - uses: ./build/action\n" +
+		"      - uses: ../other/action\n" +
+		"      - uses: docker://alpine:3.20\n" +
+		"      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567\n"
+	file, err := parse.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	got := Rule10(file)
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(got), got)
+	}
+	if !strings.Contains(got[0].Message, "actions/checkout") {
+		t.Errorf("the wrong reference was reported: %s", got[0].Message)
+	}
+}
+
+// Pinning does not silence this rule, because it answers a different question,
+// and the message has to say so or a reader who has pinned will assume otherwise.
+func TestRule10FiresOnAPinnedReference(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	src := "on:\n  push:\n    branches: [main]\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n" +
+		"      - uses: some-org/tool@" + sha + "\n"
+	file, err := parse.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	got := Rule10(file)
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1", len(got))
+	}
+	if !strings.Contains(got[0].Message, "pinned to a commit") {
+		t.Errorf("the message does not acknowledge the pinning: %s", got[0].Message)
+	}
+	// It must be explicit that pinning does not answer this.
+	if !strings.Contains(got[0].Message, "different questions") {
+		t.Errorf("the message does not separate the two questions: %s", got[0].Message)
+	}
+}
+
+// A mutable ref gets its own sentence, since that is the case where the two
+// risks overlap and a reader should hear about both.
+func TestRule10NamesAMutableRef(t *testing.T) {
+	src := "on:\n  push:\n    branches: [main]\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n" +
+		"      - uses: some-org/tool@v4\n"
+	file, err := parse.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	got := Rule10(file)
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1", len(got))
+	}
+	if !strings.Contains(got[0].Message, "mutable ref") {
+		t.Errorf("the message does not name the mutable ref: %s", got[0].Message)
+	}
+}
+
+// Every uses: shape gets a finding, not just the step level ones. A reference in
+// a job level or workflow level block is exactly as much of a hop.
+func TestRule10CoversEveryUsesShape(t *testing.T) {
+	src := "on:\n  push:\n    branches: [main]\n" +
+		"jobs:\n" +
+		"  step-level:\n    runs-on: ubuntu-latest\n    steps:\n" +
+		"      - uses: third/one@0123456789abcdef0123456789abcdef01234567\n" +
+		"  job-level:\n    uses: third/two/.github/workflows/build.yml@main\n" +
+		"    secrets: inherit\n"
+	file, err := parse.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	got := Rule10(file)
+	if len(got) != 2 {
+		t.Fatalf("got %d findings, want 2 (step level and job level): %+v", len(got), got)
+	}
+	if got[1].Location.JobID != "job-level" {
+		t.Errorf("the job level reference is not attributed to its job: %+v", got[1].Location)
+	}
+}
+
+// Rule 10 is independent of rule 1: it emits on its own whether or not the
+// reference is pinned, and rule 1 emits on its own whether or not rule 10 fires.
+// Keeping them separate is what lets each fixture assert its own count.
+func TestRule10IsIndependentOfRule1(t *testing.T) {
+	// Pinned: rule 1 stays quiet, rule 10 speaks.
+	pinned := "on:\n  push:\n    branches: [main]\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n" +
+		"      - uses: third/tool@0123456789abcdef0123456789abcdef01234567\n"
+	// Mutable: both speak.
+	mutable := "on:\n  push:\n    branches: [main]\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n" +
+		"      - uses: third/tool@v4\n"
+
+	for _, tt := range []struct {
+		src        string
+		wantRule1  int
+		wantRule10 int
+		reason     string
+	}{
+		{pinned, 0, 1, "pinned: rule 10 still speaks"},
+		{mutable, 1, 1, "mutable: both speak, independently"},
+	} {
+		file, err := parse.Parse([]byte(tt.src))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if got := len(Rule1(file)); got != tt.wantRule1 {
+			t.Errorf("%s: rule 1 = %d findings, want %d", tt.reason, got, tt.wantRule1)
+		}
+		if got := len(Rule10(file)); got != tt.wantRule10 {
+			t.Errorf("%s: rule 10 = %d findings, want %d", tt.reason, got, tt.wantRule10)
 		}
 	}
 }
