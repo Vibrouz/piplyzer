@@ -156,6 +156,41 @@ type runSite struct {
 	step    parse.Step
 }
 
+// stripShellComment removes a trailing comment from one line of a script.
+//
+// A rule that matches a command by its text will otherwise match a line that only
+// documents it, and `# do not forget to git fetch origin main` is an ordinary
+// thing for someone to write. For a Warn rule that is untidy; for a Block rule it
+// blocks a repository on a line nobody runs.
+//
+// A # only starts a comment at the start of a line or after whitespace. That
+// keeps the other job of the character working: it is also the fragment
+// separator in a URL, as in curl https://host/a#1.2.3.4, and it appears inside
+// quoted strings and after an = in an assignment. Both are written with a
+// character before the # that is not whitespace, so neither is mistaken for a
+// comment.
+func stripShellComment(line string) string {
+	for i := 0; i < len(line); i++ {
+		if line[i] != '#' {
+			continue
+		}
+		if i == 0 || line[i-1] == ' ' || line[i-1] == '\t' {
+			return line[:i]
+		}
+	}
+	return line
+}
+
+// uncommentedScript removes the comments from a whole script, keeping the line
+// structure so that an offset in the result still maps to the right line.
+func uncommentedScript(script string) string {
+	lines := strings.Split(script, "\n")
+	for i, line := range lines {
+		lines[i] = stripShellComment(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // allRunScripts returns every run: block in the workflow, in document order.
 //
 // Rules 2, 3, 4, and 5 all match against the resolved script text rather than

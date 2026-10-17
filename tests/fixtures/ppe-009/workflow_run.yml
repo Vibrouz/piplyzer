@@ -1,0 +1,27 @@
+# Rule 9 via workflow_run rather than pull_request_target.
+#
+# Expected: 1 finding, Block, PPE-009.
+#
+# workflow_run is the other privileged trigger a fork can reach: it fires when the
+# run that triggered it completes, and the workflow that handles that run has the
+# base repository's token and secrets. The untrusted code arrives as artifacts
+# rather than as a checkout, which is why the artifact download is the shape here.
+name: workflow run
+on:
+  workflow_run:
+    workflows: [Build]
+    types: [completed]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      # A trusted checkout of the default branch. Correct, and not flagged.
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+
+      # The untrusted half: artifacts built by the run this one is handling, which
+      # was built from whatever a contributor pushed.
+      - name: install what the build produced
+        run: gh run download "$TRIGGERING_RUN_ID" --dir dist
+
+      - run: ./publish.sh dist

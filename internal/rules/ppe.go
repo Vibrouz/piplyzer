@@ -853,3 +853,137 @@ func rule8Message(why string) string {
 		"Keep workflow_dispatch on the jobs that need it, and put anything privileged behind an " +
 		"environment with required reviewers."
 }
+
+// ---------------------------------------------------------------- rule 9
+
+// Rule 9: pwn request. A privileged trigger that runs a pull request's code.
+
+// Rule9ID is the rule identifier for rule 9.
+const Rule9ID = "PPE-009"
+
+// Rule9 reports a workflow that combines a privileged trigger with a way of
+// getting pull request code into a job that runs with credentials.
+//
+// The two events are pull_request_target and workflow_run, and they are the only
+// two that are privileged while also being reachable by a fork. A plain
+// pull_request runs with a read-only token, cannot see repository secrets, and
+// cannot run on a workflow file from a fork at all, so checking out PR code
+// there is the ordinary way to test a pull request. That workflow is not this
+// finding, and matching it would be matching most of GitHub Actions.
+//
+// Block. plan.md is right that there is no CVE-scale incident here, and it is
+// also right that the miss is total compromise: a fork contributor opens a pull
+// request, the workflow checks their code out, and their code runs with the
+// repository's secrets and a write-scoped token. There is no partial credit.
+func Rule9(file *parse.File) findings.Findings {
+	if !pwnRequestTrigger(file) {
+		return nil
+	}
+
+	var out findings.Findings
+	for _, job := range file.Jobs {
+		for _, step := range job.Steps {
+			line, why := untrustedFetchReason(step)
+			if why == "" {
+				continue
+			}
+			loc := stepLocation(file, job, step)
+			loc.Line = line
+			out = append(out, findings.New(
+				Rule9ID,
+				findings.SeverityBlock,
+				rule9Message(why),
+				loc,
+			))
+		}
+	}
+	return out
+}
+
+// pwnRequestTrigger reports whether the workflow is triggered in a way that
+// carries privileges a fork can reach.
+func pwnRequestTrigger(file *parse.File) bool {
+	return file.Triggers.Has("pull_request_target") || file.Triggers.Has("workflow_run")
+}
+
+// The expressions that hand a pull request's own code to a checkout.
+//
+// head.sha is the fork's commit and refs/pull/N/merge is the merge GitHub
+// builds for a pull request. Neither is the repository's code, which is the
+// whole difference: what a pull_request_target job runs by default is the base
+// branch, and it takes naming one of these to run the contributor's instead.
+var (
+	headSHA = regexp.MustCompile(`github\.event\.pull_request\.head\.sha`)
+	pullRef = regexp.MustCompile(`refs/pull/`)
+	// head.repo is the fork's repository, matched on the parent so that
+	// full_name, clone_url, ssh_url and git_url are all covered. Only full_name
+	// is a valid repository: input, but all four name the fork and a workflow
+	// that reaches for any of them is reaching for the attacker's copy.
+	headRepo = regexp.MustCompile(`github\.event\.pull_request\.head\.repo\b`)
+)
+
+// The commands that bring a pull request's code into a run: step by hand.
+//
+// checkout refuses fork code on these events by default, so reaching past it is
+// a deliberate opt-out. git fetch covers the common form, gh pr checkout is the
+// CLI equivalent, and gh run download is how a workflow_run job picks up the
+// artifacts of the run that triggered it.
+var (
+	gitFetch      = regexp.MustCompile(`\bgit\s+fetch\b`)
+	ghPRCheckout  = regexp.MustCompile(`\bgh\s+pr\s+checkout\b`)
+	ghRunDownload = regexp.MustCompile(`\bgh\s+run\s+download\b`)
+)
+
+// untrustedFetchReason returns the line and the reason a step pulls in
+// untrusted code, or an empty reason when it does not.
+//
+// All three shapes are checked because two of them are invisible to a check that
+// only looks at checkout's with: block. A repository: input and a shell command
+// in a run: step are the same attack with a different syntax.
+func untrustedFetchReason(step parse.Step) (line int, why string) {
+	// Shape 1 and 2: action inputs.
+	if ref, ok := step.With.Get("ref"); ok {
+		switch {
+		case headSHA.MatchString(ref.Text):
+			return ref.Line, "the checkout ref is github.event.pull_request.head.sha, which is the fork's own commit"
+		case pullRef.MatchString(ref.Text):
+			return ref.Line, "the checkout ref is a refs/pull/ ref, which is the merge GitHub built for the pull request"
+		}
+	}
+	if repo, ok := step.With.Get("repository"); ok && headRepo.MatchString(repo.Text) {
+		return repo.Line, "the checkout repository is github.event.pull_request.head.repo, which is the fork"
+	}
+
+	// Shape 3: a shell command in a run: block, which can fetch from anywhere
+	// and is the one shape no checkout-shaped check will ever see.
+	// Comments are stripped first: a workflow that documents the command it
+	// used to run is not running it.
+	run := uncommentedScript(step.Run)
+	for _, command := range []struct {
+		re  *regexp.Regexp
+		why string
+	}{
+		{gitFetch, "the step runs git fetch, which reaches past checkout"},
+		{ghPRCheckout, "the step runs gh pr checkout, which checks out the pull request"},
+		{ghRunDownload, "the step runs gh run download, which fetches the artifacts of the run that triggered this one"},
+	} {
+		if at := command.re.FindStringIndex(run); at != nil {
+			return step.RunLineAt(at[0]), command.why
+		}
+	}
+	return 0, ""
+}
+
+func stepLocation(file *parse.File, job parse.Job, step parse.Step) findings.Location {
+	return findings.AtStep(file.Path, step.Line, job.ID, step.Number, step.Name)
+}
+
+func rule9Message(why string) string {
+	return "This workflow is triggered by pull_request_target or workflow_run, which run with the base " +
+		"repository's token and its secrets even when a fork triggered them, and " + why + ". That hands " +
+		"the contributor's code a privileged job: anyone who can open a pull request gets their code " +
+		"executed with the repository's credentials, and a token that can write is enough to push the next " +
+		"workflow. Keep pull_request_target for trusted code only. If it has to read the pull request, use " +
+		"the event metadata rather than its code, and gate the privileged work behind an environment with " +
+		"required reviewers so a human sees the author before the job runs."
+}

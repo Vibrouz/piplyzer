@@ -1,0 +1,56 @@
+# Rule 9 negatives. Expected: 0 findings, from any rule and not only from rule 9.
+#
+# The checkouts are SHA pinned so that rule 1 is quiet too. A fixture that only
+# happens to be clean for the rule it belongs to is a weak assertion, and this
+# one is the one place that says "nothing here is wrong".
+#
+# The pull_request half is the important one. A plain pull_request job that
+# checks out the pull request's code is how GitHub tells you your change is
+# broken, it runs with a read-only token, cannot see repository secrets, and
+# cannot run a workflow file written by the fork at all. Matching it would be
+# matching most of GitHub Actions.
+name: negatives
+on:
+  pull_request:
+    types: [opened, synchronize]
+  push:
+    branches: [main]
+
+# Note the two events together mean neither is privileged: the jobs run once for
+# a pull request and once for a push to main, and neither carries secrets to a
+# fork.
+jobs:
+  # The ordinary CI shape: checkout what the event is about, on an event that
+  # carries no privileges. Not flagged, and this is the single most important
+  # negative in the fixture.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+      - run: git fetch --all --tags
+      - run: gh pr checkout 2
+
+  # The dangerous shapes on an event that cannot be reached by a fork. A git
+  # fetch here is someone building their own release and is not a pwn request.
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - run: git fetch --tags origin
+      - run: gh run download 42
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+        with:
+          ref: refs/pull/${{ github.event.number }}/merge
+
+  # The base branch on a privileged trigger. This is what pull_request_target is
+  # for: reading the metadata of a pull request without running its code.
+  label:
+    if: github.event.pull_request.author_association == 'CONTRIBUTOR'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+      - run: gh pr view --json title

