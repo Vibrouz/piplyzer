@@ -432,23 +432,37 @@ func TestRulesRunThroughTheEngine(t *testing.T) {
 		// last one is both a rule 9 and a rule 10 finding, which is the point:
 		// rule 9 says the job is privileged and runs fork code, rule 10 says the
 		// reference points somewhere this run is not scanning.
+		// Rule 11 joins the three privileged jobs, which have no permissions
+		// block and reach secrets on an event a fork can trigger.
 		{
 			"ppe-009/pwn_request.yml",
 			[]string{
-				Rule10ID, Rule9ID, Rule2ID, Rule10ID, Rule9ID,
-				Rule10ID, Rule9ID, Rule9ID,
+				Rule11ID, Rule10ID, Rule9ID, Rule2ID,
+				Rule11ID, Rule10ID, Rule9ID,
+				Rule11ID, Rule10ID, Rule9ID, Rule9ID,
 			},
 		},
 		// One hop, from the trusted checkout that makes the artifact hand-off
 		// pattern safe. Rule 9 is quiet about the pattern and rule 10 is not
 		// quiet about the checkout, which is the correct division.
-		{"ppe-009/workflow_run.yml", []string{Rule10ID}},
+		// Rule 11 as well: this job runs on workflow_run, so it is a privileged
+		// trigger, and it has no permissions block, so it inherits a default that
+		// may be read-write. Three rules on one checkout is normal and none of
+		// them suppress the others.
+		{"ppe-009/workflow_run.yml", []string{Rule11ID, Rule10ID}},
 		// Four hops from the four base-branch checkouts. This fixture asserts
 		// that rule 9 stays quiet on a privileged trigger with no untrusted
 		// fetch, and rule 10's opinion about the checkouts is independent.
+		// Four rule 11 findings for the four secret-bearing jobs on a privileged
+		// trigger with no permissions block, interleaved with the rule 10 hops.
+		// Rule 9 stays quiet about all of it, which is the point of the fixture.
 		{
 			"ppe-009/negatives.yml",
-			[]string{Rule10ID, Rule10ID, Rule10ID, Rule10ID},
+			[]string{
+				Rule11ID, Rule10ID, Rule10ID,
+				Rule11ID, Rule10ID,
+				Rule11ID, Rule10ID,
+			},
 		},
 		{"ppe-002/injected.yml", []string{Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID}},
 		// One hop, from the fake action the fixture checks out. The fixture is
@@ -470,6 +484,13 @@ func TestRulesRunThroughTheEngine(t *testing.T) {
 			[]string{Rule10ID, Rule10ID, Rule1ID, Rule10ID},
 		},
 		{"ppe-010/same_org.yml", []string{Rule10ID, Rule10ID}},
+		{"ppe-011/overgrant.yml", []string{Rule11ID, Rule11ID}},
+		// The rule 2 finding is the head.ref interpolation in the forged job,
+		// which is a genuinely injectable field and the third part of the Block.
+		{
+			"ppe-011/oidc-forgery.yml",
+			[]string{Rule11ID, Rule2ID},
+		},
 		{
 			"ppe-003/malicious.yml",
 			[]string{
@@ -2414,5 +2435,217 @@ func TestRule10IsIndependentOfRule1(t *testing.T) {
 		if got := len(Rule10(file)); got != tt.wantRule10 {
 			t.Errorf("%s: rule 10 = %d findings, want %d", tt.reason, got, tt.wantRule10)
 		}
+	}
+}
+
+// ---------------------------------------------------------------- rule 11
+
+// Rule 11 on the over-grant fixture: two Warn, one per way a job ends up
+// over-scoped.
+func TestRule11OverGrant(t *testing.T) {
+	file, data := parseFixture(t, "ppe-011/overgrant.yml")
+
+	assertFindings(t, Rule11(file), []want{
+		{Rule11ID, findings.SeverityWarn, lineOf(t, data, "permissions: write-all")},
+		// The missing-block case points at the job, since there is no permissions
+		// line to point at.
+		{Rule11ID, findings.SeverityWarn, lineOf(t, data, "  inherited-default:")},
+	})
+}
+
+// The one Block case, and the only finding in this ruleset that is Block without
+// being a direct match on a dangerous literal.
+func TestRule11OIDCCredentialForgery(t *testing.T) {
+	file, _ := parseFixture(t, "ppe-011/oidc-forgery.yml")
+
+	got := Rule11(file)
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(got), got)
+	}
+	if got[0].Severity != findings.SeverityBlock {
+		t.Errorf("severity = %q, want Block", got[0].Severity)
+	}
+	if got[0].Location.JobID != "forged" {
+		t.Errorf("job = %q, want forged", got[0].Location.JobID)
+	}
+	if !strings.Contains(got[0].Message, "cloud credential") {
+		t.Errorf("the message does not explain the consequence: %s", got[0].Message)
+	}
+}
+
+// All three parts are required. Each case drops exactly one and must not Block,
+// because a Block reachable by any two of them is a Block on a large share of
+// real workflows.
+func TestRule11BlockNeedsAllThreeParts(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{
+			"no id-token: write",
+			"on:\n  pull_request_target:\njobs:\n  j:\n    permissions:\n      contents: read\n" +
+				"    runs-on: ubuntu-latest\n    steps:\n      - run: echo \"${{ github.event.pull_request.title }}\"\n",
+		},
+		{
+			"not a pull request event",
+			"on:\n  push:\n    branches: [main]\njobs:\n  j:\n    permissions:\n      id-token: write\n" +
+				"    runs-on: ubuntu-latest\n    steps:\n      - run: echo \"${{ github.event.pull_request.title }}\"\n",
+		},
+		{
+			"no untrusted input in the script",
+			"on:\n  pull_request_target:\njobs:\n  j:\n    permissions:\n      id-token: write\n" +
+				"    runs-on: ubuntu-latest\n    steps:\n      - run: ./deploy.sh\n",
+		},
+		{
+			"untrusted input only in the job condition",
+			"on:\n  pull_request_target:\njobs:\n  j:\n    if: github.event.pull_request.title == 'x'\n" +
+				"    permissions:\n      id-token: write\n    runs-on: ubuntu-latest\n    steps:\n      - run: ./deploy.sh\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := parse.Parse([]byte(tt.src))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			for _, f := range Rule11(file) {
+				if f.Severity == findings.SeverityBlock {
+					t.Errorf("blocked with %s, but all three parts are required: %s", tt.name, f.Message)
+				}
+			}
+		})
+	}
+}
+
+// The inheritance rule, which is the thing that stops this firing on every
+// correctly scoped repository. A sensitive job under read-all is already
+// restricted and must be silent.
+func TestRule11RespectsInheritedRestrictions(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want int
+	}{
+		{
+			"workflow level read-all covers a job with no block",
+			"on:\n  push:\n    branches: [main]\npermissions: read-all\njobs:\n  j:\n" +
+				"    runs-on: ubuntu-latest\n    steps:\n      - run: echo \"${{ secrets.TOKEN }}\"\n",
+			0,
+		},
+		{
+			"workflow level write-all covers the job",
+			"on:\n  push:\n    branches: [main]\npermissions: write-all\njobs:\n  j:\n" +
+				"    runs-on: ubuntu-latest\n    steps:\n      - run: echo \"${{ secrets.TOKEN }}\"\n",
+			1,
+		},
+		{
+			"a job block overrides the workflow level",
+			"on:\n  push:\n    branches: [main]\npermissions: read-all\njobs:\n  j:\n" +
+				"    permissions: write-all\n    runs-on: ubuntu-latest\n" +
+				"    steps:\n      - run: echo \"${{ secrets.TOKEN }}\"\n",
+			1,
+		},
+		{
+			// An empty permissions key parses as declared but unspecified, and
+			// unspecified resolves to the same repository default that an absent
+			// key does. Treating the presence of the key as a restriction would
+			// hide exactly the over-grant this rule exists to name, so an empty
+			// key is silent only because the scope it resolves to is unknown
+			// here, not because the key restricted anything.
+			"an empty permissions key resolves to the default, like no key",
+			"on:\n  push:\n    branches: [main]\npermissions:\njobs:\n  j:\n" +
+				"    runs-on: ubuntu-latest\n    steps:\n      - run: echo \"${{ secrets.TOKEN }}\"\n",
+			0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := parse.Parse([]byte(tt.src))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if got := len(Rule11(file)); got != tt.want {
+				t.Errorf("got %d findings, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// A job with nothing to protect is silent. Without this, every ordinary CI job
+// in every repository gets a finding and the rule is noise.
+func TestRule11IgnoresJobsWithNothingToProtect(t *testing.T) {
+	src := "on:\n  push:\n    branches: [main]\njobs:\n  banner:\n    runs-on: ubuntu-latest\n" +
+		"    steps:\n      - run: echo hello\n"
+	file, err := parse.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := Rule11(file); len(got) != 0 {
+		t.Errorf("got %d findings, want 0: %+v", len(got), got)
+	}
+}
+
+// The message states the date-based default, because that is the part that
+// surprises people: no permissions block is not a safe default on a repository
+// that predates 2 Feb 2023.
+func TestRule11MessageExplainsTheDefault(t *testing.T) {
+	src := "on:\n  push:\n    branches: [main]\njobs:\n  j:\n    runs-on: ubuntu-latest\n" +
+		"    steps:\n      - run: echo \"${{ secrets.TOKEN }}\"\n"
+	file, err := parse.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	got := Rule11(file)
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1", len(got))
+	}
+	if !strings.Contains(got[0].Message, "2 Feb 2023") {
+		t.Errorf("the message does not state the date: %s", got[0].Message)
+	}
+	if !strings.Contains(got[0].Message, "read-write") {
+		t.Errorf("the message does not say what the default grants: %s", got[0].Message)
+	}
+}
+
+// A finding about a missing permissions block is attributed to the job, and one
+// about a declared block points at that block.
+func TestRule11Location(t *testing.T) {
+	file, data := parseFixture(t, "ppe-011/overgrant.yml")
+
+	got := Rule11(file)
+	if got[0].Location.Line != lineOf(t, data, "permissions: write-all") {
+		t.Errorf("write-all finding line = %d, want the permissions line", got[0].Location.Line)
+	}
+	if got[0].Location.JobID != "write-all" {
+		t.Errorf("job = %q, want write-all", got[0].Location.JobID)
+	}
+	// The missing block case has no line of its own, so it points at the job.
+	if got[1].Location.JobID != "inherited-default" {
+		t.Errorf("job = %q, want inherited-default", got[1].Location.JobID)
+	}
+}
+
+// A workflow level permissions block decides for jobs that declare none, so a
+// finding driven by it points at the workflow block rather than at the job. That
+// is a different line from the job level case and worth pinning separately.
+func TestRule11LocationPointsAtTheDecidingBlock(t *testing.T) {
+	src := "on:\n  push:\n    branches: [main]\npermissions: write-all\njobs:\n  j:\n" +
+		"    runs-on: ubuntu-latest\n    steps:\n      - run: echo \"${{ secrets.TOKEN }}\"\n"
+	file, err := parse.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	got := Rule11(file)
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1", len(got))
+	}
+	// Line 4 is the workflow level block, not the job on line 6.
+	if got[0].Location.Line != 4 {
+		t.Errorf("line = %d, want 4: the workflow level permissions block", got[0].Location.Line)
+	}
+	// A workflow level decision is not any one job's doing, so no job is named.
+	if got[0].Location.JobID != "" {
+		t.Errorf("job = %q, want empty for a workflow level block", got[0].Location.JobID)
 	}
 }

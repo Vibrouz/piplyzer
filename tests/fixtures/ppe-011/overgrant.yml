@@ -1,0 +1,68 @@
+# Rule 11: permissions over-grant.
+#
+# Expected: 2 findings, both Warn.
+#
+# The two ways a job ends up over-scoped: an explicit write-all, and an inherited
+# read-write default with nothing to restrict it. The Block case lives in
+# oidc-forgery.yml.
+#
+# Note that permissions: is a job level key. It is not valid on a step, so a
+# fixture that puts it there is testing nothing.
+name: over granted
+on:
+  push:
+    branches: [main]
+
+jobs:
+  write-all:
+    runs-on: ubuntu-latest
+    # Says so outright, with no default to reason about.
+    permissions: write-all
+    steps:
+      - name: build and push
+        run: make release
+
+  inherited-default:
+    runs-on: ubuntu-latest
+    # No permissions anywhere in this workflow, and the job holds a secret. On a
+    # repository created before 2 Feb 2023 that is a read-write token.
+    steps:
+      - name: deploy with a secret
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+        run: ./deploy.sh
+
+  scoped-write:
+    runs-on: ubuntu-latest
+    # A map granting exactly what it needs, on a job that can reach a secret. This
+    # is the shape a repository that has thought about permissions looks like for a
+    # job that genuinely needs write, so it stays quiet: flagging it would mean
+    # flagging every deliberate grant, and there is no way to tell deliberate from
+    # careless from the text alone.
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: publish a report
+        env:
+          REPORT_KEY: ${{ secrets.REPORT_KEY }}
+        run: ./publish.sh
+
+  not-sensitive:
+    runs-on: ubuntu-latest
+    # No permissions block, but nothing to protect either. A job that touches no
+    # secret, mints no token and checks out nobody's code does not need a finding,
+    # or every ordinary CI job in every repository gets one.
+    steps:
+      - run: echo "just a banner"
+
+  restricted:
+    runs-on: ubuntu-latest
+    # Sensitive job, but explicitly restricted. This is what a repository that has
+    # thought about permissions looks like, and it must stay quiet.
+    permissions: read-all
+    steps:
+      - name: publish a report
+        env:
+          REPORT_KEY: ${{ secrets.REPORT_KEY }}
+        run: ./publish.sh

@@ -1264,3 +1264,130 @@ func rule10Message(file *parse.File, repo, ref string) string {
 		pinned + " Pinning to a commit is the control that matters for supply chain; auditing the repository is " +
 		"the control that matters for trust, and this finding is the second one, not a substitute for the first."
 }
+
+// ---------------------------------------------------------------- rule 11
+
+// Rule 11: permissions over-grant.
+
+// Rule11ID is the rule identifier for rule 11.
+const Rule11ID = "PPE-011"
+
+// Rule11 reports a job that holds more token scope than it needs.
+//
+// Mostly Warn, with one Block case. Over-grant is a real risk and also the most
+// ordinary thing in the world: `permissions: write-all` is what a repository has
+// before anyone thinks about permissions at all, and a job with no block
+// inherits a read-write default on repositories created before 2 Feb 2023.
+// Blocking all of that would block most of GitHub Actions, which is the failure
+// mode the whole ruleset is built to avoid.
+//
+// The one Block case is OIDC credential forgery: id-token: write, on an event a
+// pull request can trigger, where untrusted input reaches a run: block. That is
+// not over-grant, it is an exploitable path, because a cloud credential minted
+// for the workflow's identity can be traded for anything that identity can reach.
+func Rule11(file *parse.File) findings.Findings {
+	var out findings.Findings
+	for _, job := range file.Jobs {
+		if finding, ok := rule11For(file, job); ok {
+			out = append(out, finding)
+		}
+	}
+	return out
+}
+
+// rule11For evaluates one job, returning a finding when there is something to say.
+func rule11For(file *parse.File, job parse.Job) (findings.Finding, bool) {
+	permissions, hasBlock := file.PermissionsFor(job.ID)
+
+	// write-all is over-grant wherever it appears, and it is unambiguous: it
+	// says so, rather than depending on a default this tool cannot see.
+	if permissions.Declared && permissions.Scope == parse.PermissionWriteAll {
+		return findings.New(
+			Rule11ID,
+			findings.SeverityWarn,
+			rule11Message("permissions: write-all", "it grants every scope at write level", "set only the scopes this job uses"),
+			permissionLocation(file, job, permissions),
+		), true
+	}
+
+	// The Block case. Checked before the general no-block Warn because a job with
+	// id-token: write and untrusted input is the more serious finding and should
+	// not be reported as a plain over-grant.
+	if permissions.Grants("id-token") && isPREvent(file) && jobHasUntrustedRun(file, job) {
+		return findings.New(
+			Rule11ID,
+			findings.SeverityBlock,
+			rule11Message(
+				"id-token: write on a pull request event with untrusted input in a run: block",
+				"it can mint a cloud credential for this workflow's identity",
+				"drop id-token: write unless this job genuinely federates to a cloud provider, and if it does, "+
+					"do not let a pull request reach the job that mints the credential",
+			),
+			permissionLocation(file, job, permissions),
+		), true
+	}
+
+	// No permissions block anywhere: the job inherits the repository default,
+	// which is read-write for anything created before 2 Feb 2023. Only worth
+	// saying for a job that could do damage with it.
+	if !hasBlock {
+		if sensitive, why := sensitiveJob(file, job); sensitive {
+			return findings.New(
+				Rule11ID,
+				findings.SeverityWarn,
+				rule11Message(
+					"no permissions: block, so it inherits the repository default",
+					why,
+					"add a permissions: block naming only the scopes this job needs",
+				),
+				jobLocation(file, job),
+			), true
+		}
+	}
+
+	return findings.Finding{}, false
+}
+
+// permissionLocation points at the permissions block that decided this.
+//
+// Both callers reach here only when a block exists, since the missing block case
+// points at the job through jobLocation instead. A workflow level block is not
+// one job's doing, so it names no job.
+func permissionLocation(file *parse.File, job parse.Job, permissions parse.Permissions) findings.Location {
+	loc := findings.At(file.Path, permissions.Line)
+	if permissions.Level == parse.PermissionLevelJob {
+		loc.JobID = job.ID
+	}
+	return loc
+}
+
+// jobHasUntrustedRun reports whether untrusted input reaches a run: block in this
+// job, which is what turns id-token: write from over-grant into an exploitable
+// path.
+//
+// Rule 2 already works out which references carry untrusted context, so this asks
+// the same question rather than keeping a second matcher that can drift from it.
+func jobHasUntrustedRun(file *parse.File, job parse.Job) bool {
+	for _, site := range allRunScripts(file) {
+		if site.jobID != job.ID {
+			continue
+		}
+		if len(untrustedReferences(site.script)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// rule11Message explains the finding.
+//
+// The date-based default is stated because it is the part that surprises people:
+// the absence of a permissions block is not a safe default on a repository that
+// predates the change to read-only, which is a great many of them.
+func rule11Message(what, why, fix string) string {
+	return what + " on this job, and " + why + ". A GITHUB_TOKEN is scoped to the repository, and every " +
+		"scope it holds is a credential in the hands of anything this job runs, including a dependency's " +
+		"build script. GitHub changed the default to read-only on 2 Feb 2023, but a repository or " +
+		"organisation created before that date still gets a read-write token unless something restricts it, " +
+		"and nothing here can see which case this repository is. Least privilege costs one line: " + fix + "."
+}

@@ -1,0 +1,74 @@
+# Rule 11, the one Block case: OIDC credential forgery.
+#
+# Expected: 1 finding, Block.
+#
+# All three parts are required and each job here is missing one, so the fixture
+# pins that a Block cannot be reached by any two of them alone.
+#
+#   1. id-token: write, so the job can mint a credential for this workflow's
+#      identity in the cloud provider.
+#   2. A pull request event, which anyone can trigger with a fork.
+#   3. Untrusted input reaching a run: block, which is how the attacker's text
+#      ends up in the shell.
+#
+# Note which field the forged job interpolates. It has to be a freetext one such
+# as head.ref or title. pull_request.number is numeric and cannot be injected, so
+# a fixture using it would demonstrate nothing while looking correct.
+#
+# The consequence is total for whatever the identity can reach, and the identity
+# is usually a cloud role that can deploy.
+name: oidc forgery
+on:
+  pull_request_target:
+
+jobs:
+  # All three. This one blocks.
+  forged:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: comment on the pull request
+        run: |
+          echo "Checking out ${{ github.event.pull_request.head.ref }}"
+          ./scripts/checkout-and-report.sh
+          ./scripts/report.sh
+
+  # Not a finding, and deliberately. A job level condition is evaluated before the
+  # job starts and cannot inject into a script, so an untrusted reference in if:
+  # is not the forging path even though id-token: write is present.
+  untrusted-in-condition-only:
+    if: github.event.pull_request.title == 'x'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: mint a credential and deploy
+        run: ./deploy.sh
+
+  # Not a finding either. It has id-token: write on a pull request event, but the
+  # only reference is its own metadata, which is not attacker controlled.
+  no-untrusted-input:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: annotate the commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git commit --allow-empty -m "checked"
+
+  # The correct shape, which is what the fix looks like: id-token: write with no
+  # untrusted input anywhere in a run: block, so the job can federate safely.
+  federated-safely:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: mint the cloud credential and deploy
+        run: ./deploy.sh
