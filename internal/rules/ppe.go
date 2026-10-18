@@ -1181,6 +1181,37 @@ func rule9Message(why string) string {
 // Rule10ID is the rule identifier for rule 10.
 const Rule10ID = "PPE-010"
 
+// firstPartyOwners are the GitHub organisations whose actions this rule trusts by
+// name.
+//
+// GitHub's own security documentation draws the line this way, saying that a
+// repository can allow "only actions that are created by GitHub" before widening
+// the policy to third parties. actions/ is GitHub's action organisation, and
+// github/ holds the first-party ones such as codeql-action, which zizmor's
+// forbidden-uses audit allowlists alongside actions/* for the same reason.
+//
+// This is a trust list, not a fact, and it is hardcoded because there is no
+// configuration file yet. A list hardcoded into the rules is worth naming as a
+// cost rather than hiding: an organisation that has pinned its own actions to
+// SHAs and audited them still gets a finding it cannot act on and cannot turn
+// off. v1 accepts that. When a config layer lands, this becomes the default
+// rather than the only setting.
+//
+// Nothing is lost by trusting these two owners. Rule 10's unique contribution is
+// on SHA pinned references, where rule 1 is silent, and nothing under actions/ or
+// github/ is pinned-and-quiet in a way that matters. What the exemption removes
+// is the case where rule 1 already spoke on the same line, which is where the
+// duplication was.
+var firstPartyOwners = map[string]bool{
+	"actions": true,
+	"github":  true,
+}
+
+// isFirstParty reports whether a reference is owned by GitHub itself.
+func isFirstParty(owner string) bool {
+	return firstPartyOwners[strings.ToLower(owner)]
+}
+
 // Rule10 reports a reference to code that lives in another repository, which is
 // code this tool does not scan.
 //
@@ -1189,6 +1220,12 @@ const Rule10ID = "PPE-010"
 // on all of them is a Block tier rule that fires on most of GitHub Actions. This
 // names a limit rather than a mistake: the code runs with the repository's
 // secrets and we have no visibility into what it contains.
+//
+// Actions owned by GitHub are exempt, which is what keeps the rule worth reading.
+// A rule that fires on actions/checkout fires on effectively every workflow ever
+// written, and a finding that is always present stops being read, which takes the
+// findings that matter down with it. See firstPartyOwners for the reasoning and
+// for what this costs.
 //
 // It is a standalone finding rather than a modifier on rule 1. It emits on its
 // own whenever a reference points outside this repository, INCLUDING when the
@@ -1207,6 +1244,11 @@ func Rule10(file *parse.File) findings.Findings {
 		// A local action is code in this repository, which we do scan. A
 		// container is not a repository reference at all. Neither is a hop.
 		if repo == "" || strings.HasPrefix(repo, "docker://") {
+			continue
+		}
+		// GitHub's own actions are trusted by name, so they are not reported.
+		owner, _, _ := strings.Cut(repo, "/")
+		if isFirstParty(owner) {
 			continue
 		}
 		out = append(out, findings.New(
@@ -1232,6 +1274,15 @@ func Rule10(file *parse.File) findings.Findings {
 func rule10Message(file *parse.File, repo, ref string) string {
 	owner, _, _ := strings.Cut(repo, "/")
 
+	// The opening sentence carries the consequence, not the identity of the
+	// reference.
+	//
+	// It used to open with "%s is code from another repository", which says what
+	// every one of these references is and what the reader already knows from the
+	// line. Since the report prints only the first sentence of a message, an opener
+	// that restates the location is an opener that is all a reader ever sees, and
+	// it spends that one line on nothing. Leading with the consequence is what
+	// makes the truncated form worth reading.
 	var intro string
 	switch {
 	case file.Repository.IsZero():
@@ -1247,17 +1298,21 @@ func rule10Message(file *parse.File, repo, ref string) string {
 		// It really is only missing when scanning a directory: inside Actions the
 		// repository name is known and this branch is not reached.
 		intro = fmt.Sprintf(
-			"%s is code from another repository. Treating it as third party, since this run is scanning a "+
-				"directory rather than a named repository and so does not know the owner. Either way it is "+
-				"not one of the workflows being scanned. ", repo)
+			"%s runs with this repository's secrets and token inside the job that uses it, and no rule "+
+				"here can see inside another repository, so nothing in this output says what it does. It is "+
+				"being treated as third party, since this run is scanning a directory rather than a named "+
+				"repository and does not know the owner. ", repo)
 	case strings.EqualFold(owner, file.Repository.Owner):
 		intro = fmt.Sprintf(
-			"%s is in your own organisation (%s), which this run is not scanning. It is usually readable by "+
-				"your team, so the review is a matter of reading it rather than trusting it blind. ", repo,
+			"%s is in your own organisation (%s), which this run is not scanning, so it runs with this "+
+				"repository's secrets without anything here being able to see inside it. It is usually "+
+				"readable by your team, so this is a matter of reading it rather than trusting it blind. ", repo,
 			file.Repository.Owner)
 	default:
 		intro = fmt.Sprintf(
-			"%s is code from a third-party repository. ", repo)
+			"%s is code from a third-party repository, and it runs with this repository's secrets and token "+
+				"inside the job that uses it. No rule in this tool looks inside another repository, so nothing "+
+				"here can tell you what it does. ", repo)
 	}
 
 	// Pinning is worth naming either way, because a reader who has pinned is
@@ -1271,10 +1326,9 @@ func rule10Message(file *parse.File, repo, ref string) string {
 			"repository changing anything.", ref)
 	}
 
-	return intro + "That code runs with this repository's secrets and token inside the job that uses it, and " +
-		"no rule in this tool looks inside another repository, so nothing here can tell you what it does." +
-		pinned + " Pinning to a commit is the control that matters for supply chain; auditing the repository is " +
-		"the control that matters for trust, and this finding is the second one, not a substitute for the first."
+	return intro + "Pinning to a commit is the control that matters for supply chain; auditing the repository " +
+		"is the control that matters for trust, and this finding is the second one, not a substitute for the " +
+		"first." + pinned
 }
 
 // ---------------------------------------------------------------- rule 11

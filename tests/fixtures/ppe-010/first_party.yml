@@ -1,0 +1,41 @@
+# Rule 10 first-party exemption.
+#
+# Expected: 0 PPE-010 findings, and 2 PPE-001 findings.
+#
+# GitHub's own actions are trusted by name, so rule 10 stays quiet on them. Rule 1
+# does not share that trust: a tag is still a mutable ref, and the two mutable
+# refs below are exactly what GitHub's own security documentation says to pin.
+#
+# This is the fixture that fails if the exemption is deleted, and the only
+# coverage the github/ owner has anywhere in the suite.
+name: first party references
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # The ordinary shape, pinned. Rule 10 would have fired here before the
+      # exemption, because rule 10 fires on pinned references on purpose.
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+
+      # Both of these are on tags, so rule 1 speaks on each and rule 10 does not.
+      # Two rules disagreeing about one line is the intended behaviour: the
+      # reference is movable, and the code is code we already trust.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # github/ is a separate owner from actions/ and is trusted the same way.
+      # github/codeql-action is what zizmor allowlists alongside actions/*.
+      - uses: github/codeql-action/init@v3
+
+      # Not first party, so this one is reported. It keeps the exemption honest:
+      # a fixture that only contained trusted owners would pass whether or not
+      # the rule worked at all.
+      - uses: example-org/checkout@0123456789abcdef0123456789abcdef01234567

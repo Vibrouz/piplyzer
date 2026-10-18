@@ -4,6 +4,7 @@
 # |--------------------------|----------|----------------------------------------------------|
 # | ppe-010/third_party.yml  | 3 Warn   | the three external reference shapes                |
 # | ppe-010/same_org.yml     | 2 Warn   | same-org versus third-party, with a known owner    |
+# | ppe-010/first_party.yml  | 0 Warn   | actions/ and github/ are exempt, rule 1 is not     |
 #
 # `same_org.yml` needs a known repository, which in CI comes from
 # `GITHUB_REPOSITORY`. Without one the tool cannot tell a colleague's repository
@@ -12,6 +13,29 @@
 #
 # Every ref here is SHA pinned except the reusable workflow, which is on `main`
 # so that rule 1 and rule 10 both have something to say about the same line.
+#
+# ## GitHub's own actions are exempt
+#
+# References owned by `actions` or `github` are trusted by name and never
+# reported, pinned or not. GitHub's own security documentation draws the same
+# line, describing a policy that allows "only actions that are created by GitHub"
+# before widening it to third parties.
+#
+# The reason is signal rather than safety. A rule that fires on `actions/checkout`
+# fires on effectively every workflow ever written, and a finding that is always
+# present stops being read, which takes the findings that matter down with it.
+# Nothing is lost by the exemption, because rule 10's unique contribution is on
+# SHA pinned third party references, where rule 1 is silent.
+#
+# It costs something, and the cost is real: this is a hardcoded trust list with no
+# configuration file behind it, so an organisation that has audited its own
+# actions cannot turn this off. v1 accepts that. When a config layer lands this
+# becomes the default rather than the only setting.
+#
+# `first_party.yml` is the fixture that holds the line, and it holds it in both
+# directions: three GitHub owned references that must be silent, and one third
+# party reference that must not be, so it fails if the exemption is widened into
+# silence rather than narrowed into a judgement.
 #
 # ## Rule 10 and rule 1 answer different questions
 #
