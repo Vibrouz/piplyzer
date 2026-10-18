@@ -31,9 +31,18 @@ const (
 	exitOK = 0
 	// exitBlocked means at least one finding is Block tier.
 	exitBlocked = 1
-	// exitUsage means the command line was wrong. Distinct from exitBlocked so a
-	// broken CI invocation is not mistaken for a clean scan that found a problem.
-	exitUsage = 2
+	// exitIncomplete means the scan did not finish: either the command line was
+	// wrong, or a workflow could not be parsed and was therefore never checked.
+	//
+	// One code for both, because the two have the same consequence and the same
+	// remedy: the scan needs to be run again before its result means anything.
+	// They are told apart by the message rather than the code, so a reader who
+	// mistook one for the other is corrected immediately instead of spending an
+	// afternoon looking for a command line problem that is not there.
+	//
+	// Distinct from exitBlocked so a scan that found a problem is never reported
+	// as one that merely failed to run.
+	exitIncomplete = 2
 )
 
 func main() {
@@ -46,7 +55,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintf(stderr, "ppe: %v\n\n", err)
 		usage(stderr)
-		return exitUsage
+		return exitIncomplete
 	}
 
 	switch cmd.kind {
@@ -63,7 +72,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// parseArgs only returns the kinds above, so reaching here means the parser
 	// and this switch have drifted, which is a bug rather than a user error.
 	fmt.Fprintf(stderr, "ppe: internal error, unhandled command kind %d\n", cmd.kind)
-	return exitUsage
+	return exitIncomplete
 }
 
 func usage(w io.Writer) {
@@ -90,8 +99,9 @@ arguments:
           has not been written to disk yet.
 
 exit codes:
-  0  nothing blocks. Warn findings may still have been printed.
+  0  the scan finished and nothing blocks. Warn findings may still be printed.
   1  at least one Block finding. This is the merge gate.
-  2  the command line was wrong.
+  2  the scan did not finish: the command line was wrong, or a workflow could not
+    be parsed and so was never checked. The result is not trustworthy either way.
 `)
 }

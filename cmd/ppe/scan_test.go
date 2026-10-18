@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/Vibrouz/whoa/internal/findings"
 )
 
 // A workflow that blocks, for exercising the scan path end to end.
@@ -41,6 +43,11 @@ func TestScanReportsFindings(t *testing.T) {
 
 	if !strings.Contains(stdout, "scanned 1 workflow") {
 		t.Errorf("missing the scanned count:\n%s", stdout)
+	}
+	// The file name is printed as a heading so that two similarly named files
+	// cannot be confused for one.
+	if !strings.Contains(stdout, "<stdin>") {
+		t.Errorf("the file heading is missing:\n%s", stdout)
 	}
 	if !strings.Contains(stdout, "BLOCK") {
 		t.Errorf("missing the BLOCK tier:\n%s", stdout)
@@ -82,11 +89,11 @@ jobs:
 `
 	stdout, _, _ := scanArgs(t, workflow, "scan", "-")
 
-	// Search for the tier markers as they appear on a finding line, not for the
-	// bare words. "warn" is a substring of "warning" in the summary line, which
-	// is above every finding and made this assert the wrong thing.
-	blockAt := strings.Index(stdout, "\nBLOCK")
-	warnAt := strings.Index(stdout, "\nwarn ")
+	// Search for the tier markers as they appear on an indented finding line, not
+	// for the bare words. "warn" is a substring of "warning" in the summary,
+	// which sits above every finding and made this assert the wrong thing.
+	blockAt := strings.Index(stdout, "  BLOCK ")
+	warnAt := strings.Index(stdout, "  warn  ")
 	if blockAt < 0 || warnAt < 0 {
 		t.Fatalf("expected both tiers:\n%s", stdout)
 	}
@@ -131,19 +138,21 @@ func TestSummariseLeavesShortMessagesAlone(t *testing.T) {
 func TestScanReportsParseErrors(t *testing.T) {
 	broken := "on:\n  push:\njobs:\n  j:\n   bad indent here\n"
 
-	stdout, stderr, _ := scanArgs(t, broken, "scan", "-")
+	stdout, _, code := scanArgs(t, broken, "scan", "-")
 
-	if stderr == "" {
-		t.Error("a parse error should reach stderr")
+	// Everything on stdout now, so the failure is not something a reader has to
+	// know to look for on stderr.
+	if !strings.Contains(stdout, "could not check 1 file") {
+		t.Errorf("the unchecked section is missing:\n%s", stdout)
 	}
-	if !strings.Contains(stderr, "broken") && !strings.Contains(stderr, "must be a mapping") {
-		t.Errorf("stderr does not explain the failure: %s", stderr)
+	if !strings.Contains(stdout, "must be a mapping") {
+		t.Errorf("the reason is missing:\n%s", stdout)
 	}
-	// Zero findings is the honest count here, since the only workflow was the one
-	// that failed. What must not happen is a summary that looks like a completed
-	// scan, so the gap has to be stated on the summary line itself.
-	if !strings.Contains(stdout, "could not be checked") {
-		t.Errorf("the summary does not say a file went unchecked:\n%s", stdout)
+	if !strings.Contains(stdout, "scanned 0 workflows") {
+		t.Errorf("the summary does not say nothing was scanned:\n%s", stdout)
+	}
+	if code != exitIncomplete {
+		t.Errorf("exit = %d, want %d: an unfinished scan is not a clean result", code, exitIncomplete)
 	}
 }
 
@@ -155,13 +164,40 @@ func TestScanContinuesPastABrokenWorkflow(t *testing.T) {
 		".github/workflows/broken.yml": "on:\n  push:\njobs:\n  j:\n   bad indent here\n",
 	})
 
-	stdout, stderr, _ := scanArgs(t, "", "scan", dir)
+	stdout, _, code := scanArgs(t, "", "scan", dir)
 
 	if !strings.Contains(stdout, "BLOCK") {
 		t.Errorf("the good workflow's finding was lost:\n%s", stdout)
 	}
-	if !strings.Contains(stderr, "must be a mapping") {
-		t.Errorf("the broken workflow was not reported: %s", stderr)
+	if !strings.Contains(stdout, "must be a mapping") {
+		t.Errorf("the broken workflow was not reported:\n%s", stdout)
+	}
+	// The good file blocks, so that outranks the incomplete scan.
+	if code != exitBlocked {
+		t.Errorf("exit = %d, want %d: a confirmed Block outranks an unfinished scan", code, exitBlocked)
+	}
+}
+
+// Two files whose names differ by one letter, one scanned and one refused. This
+// is the case that made the original output unreadable: the error named the
+// second file with nothing to separate it, so it read as a finding about the
+// first.
+func TestScanSeparatesFilesWithSimilarNames(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		".github/workflows/boom.yml":  blockingWorkflow,
+		".github/workflows/bomba.yml": "on:\n  push:\njobs:\n  j:\n   bad indent here\n",
+	})
+
+	stdout, _, code := scanArgs(t, "", "scan", dir)
+
+	if !strings.Contains(stdout, "boom.yml") {
+		t.Errorf("the scanned file is not named:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "could not check") {
+		t.Errorf("the unchecked section is missing:\n%s", stdout)
+	}
+	if code != exitBlocked {
+		t.Errorf("exit = %d, want %d", code, exitBlocked)
 	}
 }
 
@@ -173,9 +209,14 @@ func TestScanReportsSkippedCount(t *testing.T) {
 		".github/workflows/notes.md": "not a workflow",
 	})
 
-	stdout, _, _ := scanArgs(t, "", "scan", dir)
-	if !strings.Contains(stdout, "skipped 1 file") {
+	stdout, _, code := scanArgs(t, "", "scan", dir)
+	if !strings.Contains(stdout, "1 other file not scanned") {
 		t.Errorf("missing the skipped count:\n%s", stdout)
+	}
+	// A file we chose not to look at is not a gap in the scan, so it does not make
+	// the scan incomplete and does not change the exit code.
+	if code != exitOK {
+		t.Errorf("exit = %d, want %d", code, exitOK)
 	}
 }
 
@@ -193,10 +234,223 @@ func TestScanEmptyDirectory(t *testing.T) {
 // A missing path is a usage error and says which path.
 func TestScanMissingPath(t *testing.T) {
 	_, stderr, code := scanArgs(t, "", "scan", "no-such-directory")
-	if code != exitUsage {
-		t.Errorf("exit = %d, want %d", code, exitUsage)
+	if code != exitIncomplete {
+		t.Errorf("exit = %d, want %d", code, exitIncomplete)
 	}
 	if !strings.Contains(stderr, "no-such-directory") {
 		t.Errorf("stderr does not name the path: %s", stderr)
+	}
+}
+
+// The exit code matrix. Every row is a combination a CI job can actually hit, and
+// the two that overlap are the ones that needed deciding.
+func TestExitCodes(t *testing.T) {
+	broken := "on:\n  push:\njobs:\n  j:\n   bad indent here\n"
+
+	tests := []struct {
+		name     string
+		stdin    string
+		want     int
+		reason   string
+		wantCode bool
+	}{
+		{
+			name:   "clean workflow exits 0",
+			stdin:  cleanWorkflow,
+			want:   exitOK,
+			reason: "nothing blocks and everything was read",
+		},
+		{
+			name:   "warn only exits 0",
+			stdin:  "on:\n  push:\n  workflow_dispatch:\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: make deploy\n",
+			want:   exitOK,
+			reason: "a Warn must never fail a build, or people ignore the output",
+		},
+		{
+			name:   "a Block exits 1",
+			stdin:  blockingWorkflow,
+			want:   exitBlocked,
+			reason: "this is the merge gate",
+		},
+		{
+			name:   "an unreadable file exits 2",
+			stdin:  broken,
+			want:   exitIncomplete,
+			reason: "the scan did not finish, so its result is not trustworthy",
+		},
+		{
+			name:   "a bad path exits 2",
+			want:   exitIncomplete,
+			reason: "the invocation was wrong",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, code := scanArgs(t, tt.stdin, "scan", "-")
+			if code != tt.want {
+				t.Errorf("exit = %d, want %d (%s)", code, tt.want, tt.reason)
+			}
+		})
+	}
+}
+
+// A Block outranks an incomplete scan. Both are true when a scan finds a problem
+// and also fails to check a file, and one exit code has to carry it. The
+// confirmed problem is the more actionable news, so reporting "could not
+// complete" there would understate it.
+func TestBlockOutranksIncomplete(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		".github/workflows/blocks.yml": blockingWorkflow,
+		".github/workflows/broken.yml": "on:\n  push:\njobs:\n  j:\n   bad indent here\n",
+	})
+
+	stdout, _, code := scanArgs(t, "", "scan", dir)
+
+	if code != exitBlocked {
+		t.Errorf("exit = %d, want %d", code, exitBlocked)
+	}
+	// Both facts have to be visible, because the exit code only carries one.
+	if !strings.Contains(stdout, "BLOCK") {
+		t.Errorf("the finding is missing:\\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "could not check") {
+		t.Errorf("the unchecked file is missing:\\n%s", stdout)
+	}
+}
+
+// A duplicate key is reported without stopping the scan, because GitHub accepts
+// the file and refusing it would fail a workflow that runs in production.
+func TestDuplicateKeyIsReportedAsANotice(t *testing.T) {
+	dup := "on:\n  push:\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n" +
+		"      - name: s\n        run: echo first\n        run: echo second\n"
+
+	stdout, _, code := scanArgs(t, dup, "scan", "-")
+
+	if code != exitOK {
+		t.Errorf("exit = %d, want %d: GitHub accepts this file", code, exitOK)
+	}
+	if !strings.Contains(stdout, "note") {
+		t.Errorf("the duplicate key was not reported:\\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "only the last one is used") {
+		t.Errorf("the notice does not say what happened:\\n%s", stdout)
+	}
+}
+
+// A notice is separate from a finding and says so, so a reader can tell what the
+// tool noticed from what it decided.
+func TestNoticesAreDistinguishableFromFindings(t *testing.T) {
+	// The dangerous command has to be in the *surviving* step, because that is the
+	// one that runs. Putting it in the dropped half would prove nothing.
+	dir := writeTree(t, map[string]string{
+		".github/workflows/ci.yml": "on:\n  push:\n    branches: [main]\njobs:\n  j:\n" +
+			"    runs-on: ubuntu-latest\n    steps:\n" +
+			"      - name: gone\n        run: echo dropped\n        run: echo kept\n" +
+			"      - run: nc 203.0.113.7 4444 < /dev/null\n",
+	})
+
+	stdout, _, _ := scanArgs(t, "", "scan", dir)
+
+	if !strings.Contains(stdout, "note ") {
+		t.Errorf("no note line:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "BLOCK ") {
+		t.Errorf("no finding line:\n%s", stdout)
+	}
+	// A notice must not be counted as a block or a warning.
+	if !strings.Contains(stdout, "1 block, 0 warnings") {
+		t.Errorf("the notice was counted as a finding:\n%s", stdout)
+	}
+}
+
+// The dropped half of a duplicate is not scanned, because it does not run. That
+// is what makes last-one-wins safe: what is analysed is what GitHub executes.
+func TestDroppedScriptIsNotScanned(t *testing.T) {
+	// One step with two run keys. Two separate "- run:" entries would be two
+	// ordinary steps and would correctly produce no notice.
+	dup := "on:\n  push:\n    branches: [main]\njobs:\n  j:\n    runs-on: ubuntu-latest\n" +
+		"    steps:\n" +
+		"      - run: nc 198.51.100.42 4444 < /dev/null\n" +
+		"        run: echo harmless\n"
+
+	stdout, _, code := scanArgs(t, dup, "scan", "-")
+
+	if code != exitOK {
+		t.Errorf("exit = %d, want %d", code, exitOK)
+	}
+	if strings.Contains(stdout, "198.51.100.42") {
+		t.Errorf("an address in the dropped half was reported, but that code never runs:\n%s", stdout)
+	}
+}
+
+// Ordering within one file: Block before Warn, then line, then rule ID.
+//
+// The rule ID tiebreak exists because two findings on the same line with the same
+// tier have no other ordering, and an unstable one would make the golden files
+// for the end to end tests flaky.
+func TestSortFindingsOrdering(t *testing.T) {
+	list := []flatFinding{
+		{finding: findings.New("PPE-010", findings.SeverityWarn, "w", findings.At("f", 2))},
+		{finding: findings.New("PPE-004", findings.SeverityBlock, "b1", findings.At("f", 9))},
+		{finding: findings.New("PPE-006", findings.SeverityBlock, "b2", findings.At("f", 5))},
+		{finding: findings.New("PPE-011", findings.SeverityBlock, "b3", findings.At("f", 5))},
+		{finding: findings.New("PPE-001", findings.SeverityBlock, "b4", findings.At("f", 1))},
+	}
+	sortFindings(list)
+
+	want := []string{"PPE-001", "PPE-006", "PPE-011", "PPE-004", "PPE-010"}
+	for i, w := range want {
+		if list[i].finding.RuleID != w {
+			t.Errorf("position %d = %s, want %s", i, list[i].finding.RuleID, w)
+		}
+	}
+}
+
+// Two files that both produce findings are reported as two groups, in path order,
+// rather than as one flat list where the file boundaries are invisible.
+func TestGroupByFileKeepsFilesTogether(t *testing.T) {
+	scanned := []checked{
+		{path: "b.yml", findings: findings.Findings{
+			findings.New("PPE-004", findings.SeverityBlock, "b", findings.At("b.yml", 1)),
+		}},
+		{path: "a.yml", findings: findings.Findings{
+			findings.New("PPE-010", findings.SeverityWarn, "a", findings.At("a.yml", 1)),
+			findings.New("PPE-001", findings.SeverityBlock, "a2", findings.At("a.yml", 2)),
+		}},
+		{path: "", findings: findings.Findings{
+			findings.New("PPE-007", findings.SeverityWarn, "s", findings.At("<stdin>", 1)),
+		}},
+	}
+
+	groups := groupByFile(scanned)
+	if len(groups) != 3 {
+		t.Fatalf("got %d groups, want 3", len(groups))
+	}
+	// <stdin> has an empty path and sorts first.
+	if groups[0].title != "<stdin>" {
+		t.Errorf("first group = %q, want <stdin>", groups[0].title)
+	}
+	if groups[1].title != "a.yml" || groups[2].title != "b.yml" {
+		t.Errorf("groups = %q, %q, want a.yml then b.yml", groups[1].title, groups[2].title)
+	}
+	// Two findings in one group stay together and in severity order.
+	if len(groups[1].findings) != 2 {
+		t.Fatalf("a.yml has %d findings, want 2", len(groups[1].findings))
+	}
+	if groups[1].findings[0].finding.RuleID != "PPE-001" {
+		t.Errorf("first in a.yml = %s, want the Block", groups[1].findings[0].finding.RuleID)
+	}
+}
+
+// A file with no findings and no notices produces no group, so a clean scan does
+// not print an empty heading per file.
+func TestGroupByFileSkipsQuietFiles(t *testing.T) {
+	groups := groupByFile([]checked{{path: "quiet.yml"}})
+	if len(groups) != 1 {
+		t.Fatalf("got %d groups, want 1: the file is still a group", len(groups))
+	}
+	if len(groups[0].findings) != 0 || len(groups[0].notices) != 0 {
+		t.Error("a quiet file should have nothing in its group")
 	}
 }

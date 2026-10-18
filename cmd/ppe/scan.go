@@ -18,162 +18,234 @@ import (
 func scan(cmd command, stdin io.Reader, stdout, stderr io.Writer) int {
 	found, err := collect(cmd, stdin)
 	if err != nil {
-		fmt.Fprintf(stderr, "ppe: %v\n", err)
-		return exitUsage
+		fmt.Fprintf(stderr, "usage: %v\n", err)
+		return exitIncomplete
 	}
 
-	results, errs := runAll(found)
+	scanned, unchecked := runAll(found)
 
-	// Plain text for now. Colour and the JSON writer land in the commits after
-	// this one, and both want a single rendering function rather than formatting
-	// inline here.
+	// Everything on stdout, in one place.
 	//
-	// Printed even when there were parse errors, because the findings from the
-	// files that did parse are real and withholding them would mean one broken
-	// workflow hides every problem in the repository with it.
-	printPlain(stdout, results, found, len(errs))
+	// Parse errors used to go to stderr alone, which put them below the findings
+	// with nothing separating them and made them read as another finding. Two
+	// files named boom.yml and bomba.yml, one scanned and one refused, came out
+	// looking like a list about one file.
+	report(stdout, scanned, unchecked, found)
 
-	for _, e := range errs {
-		fmt.Fprintf(stderr, "ppe: %v\n", e)
+	// A Block outranks an incomplete scan.
+	//
+	// Both are true when they co-occur, and exit code can only carry one. A
+	// confirmed problem is the more actionable news, so reporting 2 there would
+	// understate it. The reverse overstates, which is why 2 is only used when
+	// nothing blocks: we never hide a finding behind a "the tool was confused".
+	if blocks(scanned) > 0 {
+		return exitBlocked
 	}
-	if len(errs) > 0 {
-		// A workflow that could not be parsed is a workflow that was not
-		// checked, and reporting that as a clean run would be the worst possible
-		// answer. It is a usage level failure for now; the exit code question is
-		// settled in the next commit.
-		return exitUsage
+	if len(unchecked) > 0 {
+		return exitIncomplete
 	}
-
-	// Always 0 until the exit code behaviour lands. This commit makes the scan
-	// real; it does not yet make it a gate.
 	return exitOK
 }
 
-// result is one file's findings, kept with the file so that a parse error and a
-// finding can be reported against the same path.
-type result struct {
+// blocks counts the Block tier findings across every file.
+func blocks(results []checked) int {
+	n := 0
+	for _, r := range results {
+		for _, f := range r.findings {
+			if f.Severity.Blocking() {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// checked is one file that was read, with what the rules made of it and anything
+// the parser wants to say about how it read it.
+type checked struct {
 	path     string
 	findings findings.Findings
+	notices  []parse.Notice
 }
 
 // name prints the path, or <stdin>.
-func (r result) name() string {
-	if r.path == "" {
+func (c checked) name() string {
+	if c.path == "" {
 		return "<stdin>"
 	}
-	return r.path
+	return c.path
+}
+
+// unreadable is one file that could not be read, and why.
+//
+// Kept as its own type rather than an error string so that it can be grouped with
+// the file it names. An ungrouped error is easy to skim past when the file names
+// are similar.
+type unreadable struct {
+	path string
+	// err is the parser's message.
+	err error
 }
 
 // runAll parses and checks every collected source.
 //
-// Parse failures are collected rather than returned, so one broken workflow does
-// not hide the findings in every other one. They are reported separately because
-// they mean something different: a finding is a problem in a file we read, a
-// parse error is a file we could not read at all.
-func runAll(found collection) ([]result, []error) {
-	var out []result
-	var errs []error
+// A file that cannot be parsed does not stop the others. One broken workflow
+// hiding every problem in the repository is the failure this shape exists to
+// avoid.
+func runAll(found collection) ([]checked, []unreadable) {
+	var out []checked
+	var bad []unreadable
 
 	for _, src := range found.sources {
 		// The name rather than the path, so a stdin finding renders as
-		// "<stdin>:25" instead of "(no file)", and a parse error names the input.
+		// "<stdin>:25" instead of "(no file)".
 		//
 		// The parse error is not wrapped again with the name: ParseFile already
-		// puts the path at the front of its message, and repeating it produced
-		// "broken.yml: broken.yml:5: ...".
+		// puts the path at the front of its message.
 		file, err := parse.ParseFile(src.name(), src.data)
 		if err != nil {
-			errs = append(errs, err)
+			bad = append(bad, unreadable{path: src.name(), err: err})
 			continue
 		}
-		out = append(out, result{path: src.path, findings: rules.NewEngine().Run(file)})
+		out = append(out, checked{
+			path:     src.path,
+			findings: rules.NewEngine().Run(file),
+			notices:  file.Notices,
+		})
 	}
 
-	return out, errs
+	return out, bad
 }
 
-// printPlain writes the human readable form.
-//
-// No colour yet, and no attempt at a layout that survives narrow terminals. What
-// is here is the information, grouped so it can be read: a summary, then findings
-// in severity order so the ones that block are not below the fold.
-func printPlain(w io.Writer, results []result, found collection, unchecked int) {
-	var blocks, warns int
-	for _, r := range results {
-		for _, f := range r.findings {
-			if f.Severity.Blocking() {
-				blocks++
-			} else {
+// report writes the whole result: a summary, then what could not be checked,
+// then the findings grouped by file.
+func report(w io.Writer, scanned []checked, bad []unreadable, found collection) {
+	var warns int
+	for _, c := range scanned {
+		for _, f := range c.findings {
+			if !f.Severity.Blocking() {
 				warns++
 			}
 		}
 	}
 
-	fmt.Fprintf(w, "scanned %d workflow%s", len(results), plural(len(results), "", "s"))
+	nBlocks := blocks(scanned)
+	fmt.Fprintf(w, "scanned %d workflow%s, %d block%s, %d warning%s",
+		len(scanned), plural(len(scanned), "", "s"),
+		nBlocks, plural(nBlocks, "", "s"),
+		warns, plural(warns, "", "s"))
+	// Skipped files are counted separately from unchecked ones. Those were passed
+	// over by choice, usually because they are not workflows at all, and lumping
+	// them in with a file we failed to read would make the second look alarming.
 	if skipped := found.skippedTotal(); skipped > 0 {
-		fmt.Fprintf(w, ", skipped %d file%s", skipped, plural(skipped, "", "s"))
+		fmt.Fprintf(w, ", %d other file%s not scanned", skipped, plural(skipped, "", "s"))
 	}
-	// Unchecked is counted separately from skipped. Those files were not passed
-	// over by choice, and folding them into the same number would understate a
-	// scan that failed on a third of the repository.
-	if unchecked > 0 {
-		fmt.Fprintf(w, ", %d could not be checked", unchecked)
-	}
-	fmt.Fprintf(w, "\n%d block%s, %d warning%s", blocks, plural(blocks, "", "s"), warns, plural(warns, "", "s"))
 	fmt.Fprintln(w)
 	fmt.Fprintln(w)
 
-	if len(results) == 0 {
-		fmt.Fprintln(w, "nothing to check.")
+	// Unchecked files are reported as their own section, before the findings, and
+	// named with their reason.
+	//
+	// They are not folded into the counts above and not mixed into the finding
+	// list, because they are neither: a file that was never read is a gap in the
+	// scan, and a reader who cannot tell a gap from a clean result will trust the
+	// wrong number.
+	if len(bad) > 0 {
+		fmt.Fprintf(w, "could not check %d file%s:\n", len(bad), plural(len(bad), "", "s"))
+		for _, u := range bad {
+			fmt.Fprintf(w, "  %s\n    %v\n", u.path, u.err)
+		}
+		fmt.Fprintln(w)
+	}
+
+	if len(scanned) == 0 {
+		if len(bad) == 0 {
+			fmt.Fprintln(w, "nothing to check.")
+		}
 		return
 	}
 
-	// Severity first, then file, then line. A reader opening this in CI wants the
-	// thing that blocks, not the thing that happens to be first in the tree.
-	sorted := sortResults(results)
-	for _, f := range sorted {
-		tier := "warn"
-		if f.finding.Severity.Blocking() {
-			tier = "BLOCK"
+	// Grouped by file. Block findings first within each file, and files ordered so
+	// the same file is never split across the listing.
+	for _, group := range groupByFile(scanned) {
+		if len(group.findings) == 0 && len(group.notices) == 0 {
+			continue
 		}
-		fmt.Fprintf(w, "%-5s  %s  %s\n", tier, f.finding.RuleID, f.finding.Location)
-		fmt.Fprintf(w, "       %s\n", summarise(f.finding.Message))
+		fmt.Fprintf(w, "%s\n", group.title)
+
+		for _, n := range group.notices {
+			fmt.Fprintf(w, "  note    line %-4d %s\n", n.Line, n.Message)
+		}
+		for _, f := range group.findings {
+			tier := "warn"
+			if f.finding.Severity.Blocking() {
+				tier = "BLOCK"
+			}
+			fmt.Fprintf(w, "  %-6s %s  %s\n", tier, f.finding.RuleID, f.finding.Location)
+			fmt.Fprintf(w, "         %s\n", summarise(f.finding.Message))
+		}
 		fmt.Fprintln(w)
 	}
 }
 
-// flatFinding is a finding with the file it came from, for sorting and printing.
-type flatFinding struct {
-	path    string
-	finding findings.Finding
+// fileGroup is one file and everything said about it.
+type fileGroup struct {
+	title    string
+	findings []flatFinding
+	notices  []parse.Notice
 }
 
-// sortResults flattens and orders findings by severity, then location.
-func sortResults(results []result) []flatFinding {
-	var flat []flatFinding
-	for _, r := range results {
-		for _, f := range r.findings {
-			flat = append(flat, flatFinding{path: r.path, finding: f})
+// groupByFile collects findings and notices under the file they came from.
+//
+// Sorting by path rather than by severity across the whole run is deliberate. A
+// single flat severity-ordered list separates two files that share a rule ID, and
+// a reader cannot tell which file a line belongs to.
+func groupByFile(scanned []checked) []fileGroup {
+	byPath := map[string]*fileGroup{}
+	var order []string
+
+	for _, c := range scanned {
+		key := c.name()
+		if _, seen := byPath[key]; !seen {
+			byPath[key] = &fileGroup{title: key}
+			order = append(order, key)
+		}
+		g := byPath[key]
+		g.notices = append(g.notices, c.notices...)
+		for _, f := range c.findings {
+			g.findings = append(g.findings, flatFinding{path: c.path, finding: f})
 		}
 	}
 
-	sort.SliceStable(flat, func(i, j int) bool {
-		a, b := flat[i].finding, flat[j].finding
-		// Block before Warn. Severity has only two values, so this is a
-		// comparison and not a rank lookup.
+	sort.Strings(order)
+
+	groups := make([]fileGroup, 0, len(order))
+	for _, key := range order {
+		g := byPath[key]
+		sortFindings(g.findings)
+		groups = append(groups, *g)
+	}
+	return groups
+}
+
+// sortFindings orders one file's findings: Block first, then line, then rule.
+func sortFindings(list []flatFinding) {
+	sort.SliceStable(list, func(i, j int) bool {
+		a, b := list[i].finding, list[j].finding
 		if a.Severity != b.Severity {
 			return a.Severity.Blocking()
-		}
-		if flat[i].path != flat[j].path {
-			return flat[i].path < flat[j].path
 		}
 		if a.Location.Line != b.Location.Line {
 			return a.Location.Line < b.Location.Line
 		}
 		return a.RuleID < b.RuleID
 	})
+}
 
-	return flat
+// flatFinding is a finding with the file it came from.
+type flatFinding struct {
+	path    string
+	finding findings.Finding
 }
 
 // summarise shortens a finding message to its first sentence.

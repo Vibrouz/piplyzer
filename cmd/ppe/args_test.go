@@ -211,8 +211,8 @@ func TestRunDispatch(t *testing.T) {
 	}{
 		{"help exits clean", []string{"--help"}, exitOK, "usage:"},
 		{"version exits clean", []string{"--version"}, exitOK, "ppe "},
-		{"bad flag is a usage error", []string{"scan", "--nope"}, exitUsage, "unknown flag"},
-		{"unknown command is a usage error", []string{"nope"}, exitUsage, "unknown command"},
+		{"bad flag is a usage error", []string{"scan", "--nope"}, exitIncomplete, "unknown flag"},
+		{"unknown command is a usage error", []string{"nope"}, exitIncomplete, "unknown command"},
 	}
 
 	for _, tt := range tests {

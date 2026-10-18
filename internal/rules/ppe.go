@@ -1235,10 +1235,21 @@ func rule10Message(file *parse.File, repo, ref string) string {
 	var intro string
 	switch {
 	case file.Repository.IsZero():
+		// Worded as an assumption rather than an uncertainty, because that is
+		// what it is and how it behaves.
+		//
+		// An earlier version said the tool "cannot tell whether it is a third
+		// party", which reads as though it might turn out to be one of ours and
+		// would therefore not be a finding. It is treated as third party either
+		// way, and saying so plainly is more useful than describing the missing
+		// context at the reader's expense.
+		//
+		// It really is only missing when scanning a directory: inside Actions the
+		// repository name is known and this branch is not reached.
 		intro = fmt.Sprintf(
-			"%s is code from another repository, and this run is scanning a directory rather than a named "+
-				"repository, so the tool cannot tell whether it is a third party. Either way it is not being "+
-				"scanned: only this repository's workflows are. ", repo)
+			"%s is code from another repository. Treating it as third party, since this run is scanning a "+
+				"directory rather than a named repository and so does not know the owner. Either way it is "+
+				"not one of the workflows being scanned. ", repo)
 	case strings.EqualFold(owner, file.Repository.Owner):
 		intro = fmt.Sprintf(
 			"%s is in your own organisation (%s), which this run is not scanning. It is usually readable by "+

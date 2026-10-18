@@ -432,8 +432,11 @@ func TestRulesRunThroughTheEngine(t *testing.T) {
 		// last one is both a rule 9 and a rule 10 finding, which is the point:
 		// rule 9 says the job is privileged and runs fork code, rule 10 says the
 		// reference points somewhere this run is not scanning.
-		// Rule 11 joins the three privileged jobs, which have no permissions
-		// block and reach secrets on an event a fork can trigger.
+		// Rule 11 joins all three: these jobs check out a contributor's code on
+		// pull_request_target, which is exactly the combination that is
+		// privileged. Note this is not about secrets, and none of these jobs hold
+		// any: it is the checkout that makes them sensitive, and only because the
+		// event is one of the privileged ones.
 		{
 			"ppe-009/pwn_request.yml",
 			[]string{
@@ -456,14 +459,11 @@ func TestRulesRunThroughTheEngine(t *testing.T) {
 		// Four rule 11 findings for the four secret-bearing jobs on a privileged
 		// trigger with no permissions block, interleaved with the rule 10 hops.
 		// Rule 9 stays quiet about all of it, which is the point of the fixture.
-		{
-			"ppe-009/negatives.yml",
-			[]string{
-				Rule11ID, Rule10ID, Rule10ID,
-				Rule11ID, Rule10ID,
-				Rule11ID, Rule10ID,
-			},
-		},
+		// No rule 11 findings any more. These jobs check out code on a
+		// privileged event, which used to make them sensitive, but none of them
+		// holds a secret or mints a token, so under the tightened definition they
+		// are not. Rule 9 is unaffected: it does not go through sensitiveJob.
+		{"ppe-009/negatives.yml", []string{Rule10ID, Rule10ID, Rule10ID, Rule10ID}},
 		{"ppe-002/injected.yml", []string{Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID}},
 		// One hop, from the fake action the fixture checks out. The fixture is
 		// about rule 2 finding nothing, and rule 10 has its own opinion about
@@ -668,10 +668,26 @@ func TestRule8SensitivityShapes(t *testing.T) {
 			reasoning: "there is no fork PR to check out",
 		},
 		{
-			name:      "checkout on a pull request event",
-			src:       "on:\n  workflow_dispatch:\n  pull_request:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n",
+			name:      "checkout on pull_request_target",
+			src:       "on:\n  workflow_dispatch:\n  pull_request_target:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n",
 			fired:     true,
-			reasoning: "checks out code on an event a contributor can trigger",
+			reasoning: "pull_request_target runs with the base repository's privileges, so a checkout there is sensitive",
+		},
+		{
+			// A plain pull_request is the ordinary CI shape. It gets a read-only
+			// token and no secrets, so counting its checkout as sensitive fired
+			// rule 8 and rule 11 on almost every repository, which is the noise
+			// that gets a gate switched off.
+			name:      "checkout on a plain pull_request is not sensitive",
+			src:       "on:\n  workflow_dispatch:\n  pull_request:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n",
+			fired:     false,
+			reasoning: "a fork's pull_request is read-only and secretless by design",
+		},
+		{
+			name:      "checkout on workflow_run",
+			src:       "on:\n  workflow_dispatch:\n  workflow_run:\n    workflows: [Build]\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n",
+			fired:     true,
+			reasoning: "workflow_run runs a job graph with a write token",
 		},
 		{
 			name:      "checkout on pull_request_target",
@@ -686,8 +702,8 @@ func TestRule8SensitivityShapes(t *testing.T) {
 			reasoning: "same, fixed by decision 18",
 		},
 		{
-			name:      "checkout after a step with no uses: on a pull request event",
-			src:       "on:\n  workflow_dispatch:\n  pull_request:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n      - uses: actions/checkout@v4\n",
+			name:      "checkout after a step with no uses: on a privileged event",
+			src:       "on:\n  workflow_dispatch:\n  pull_request_target:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n      - uses: actions/checkout@v4\n",
 			fired:     true,
 			reasoning: "the walk has to step over steps that have no uses: at all",
 		},
