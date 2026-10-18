@@ -14,9 +14,6 @@ func TestParseArgsDefaults(t *testing.T) {
 	if cmd.kind != kindScan {
 		t.Errorf("kind = %v, want scan", cmd.kind)
 	}
-	if cmd.format != formatHuman {
-		t.Errorf("format = %q, want human", cmd.format)
-	}
 	if cmd.noColor {
 		t.Error("colour should be on by default")
 	}
@@ -31,7 +28,7 @@ func TestParseArgsDefaults(t *testing.T) {
 }
 
 // The argument grammar is what people actually type, so the shapes below are the
-// ones worth pinning: flags before and after paths, both value spellings, and a
+// ones worth pinning: flags before and after paths, both flag spellings, and a
 // bare "-" among the paths.
 //
 // wantPaths is compared exactly, and the default of "." is spelled out in each
@@ -43,45 +40,47 @@ func TestParseArgsGrammar(t *testing.T) {
 		args      []string
 		wantPath  []string
 		wantStdin bool
-		format    format
 		noColor   bool
 	}{
 		{
 			name:     "paths before flags",
-			args:     []string{"scan", "a", "b", "--format", "json"},
+			args:     []string{"scan", "a", "b", "--no-color"},
 			wantPath: []string{"a", "b"},
-			format:   formatJSON,
+			noColor:  true,
 		},
 		{
 			name:     "flags before paths",
-			args:     []string{"scan", "--format", "json", "a", "b"},
+			args:     []string{"scan", "--no-color", "a", "b"},
 			wantPath: []string{"a", "b"},
-			format:   formatJSON,
+			noColor:  true,
 		},
 		{
 			name:     "equals form",
-			args:     []string{"scan", "--format=json", "a"},
+			args:     []string{"scan", "--no-color=true", "a"},
 			wantPath: []string{"a"},
-			format:   formatJSON,
+			noColor:  true,
 		},
 		{
-			name:     "short format flag",
-			args:     []string{"scan", "-f", "json"},
-			wantPath: []string{scanDefaults},
-			format:   formatJSON,
+			// --no-color takes no value, so this also covers a flag that is
+			// followed by something which looks like its argument.
+			name:     "flag after every path",
+			args:     []string{"scan", "a", "b", "c", "--no-color"},
+			wantPath: []string{"a", "b", "c"},
+			noColor:  true,
 		},
 		{
-			name:     "short flag equals form",
-			args:     []string{"scan", "-f=json"},
+			// An equals form on a boolean flag is accepted and ignored, since
+			// there is no value to disagree with.
+			name:     "boolean equals form",
+			args:     []string{"scan", "--no-color=true"},
 			wantPath: []string{scanDefaults},
-			format:   formatJSON,
+			noColor:  true,
 		},
 		{
 			name:      "stdin among paths",
 			args:      []string{"scan", "-", "a"},
 			wantPath:  []string{"a"},
 			wantStdin: true,
-			format:    formatHuman,
 		},
 		{
 			// stdin alone means no default path. Reading the workflow from a pipe
@@ -91,33 +90,23 @@ func TestParseArgsGrammar(t *testing.T) {
 			args:      []string{"scan", "-"},
 			wantPath:  nil,
 			wantStdin: true,
-			format:    formatHuman,
 		},
 		{
 			name:      "stdin with an explicit path too",
 			args:      []string{"scan", "-", "a", "b"},
 			wantPath:  []string{"a", "b"},
 			wantStdin: true,
-			format:    formatHuman,
 		},
 		{
 			name:     "no color",
 			args:     []string{"scan", "--no-color"},
 			wantPath: []string{scanDefaults},
-			format:   formatHuman,
 			noColor:  true,
-		},
-		{
-			name:     "explicit human format",
-			args:     []string{"scan", "--format", "human"},
-			wantPath: []string{scanDefaults},
-			format:   formatHuman,
 		},
 		{
 			name:     "a path that looks like a flag needs ./",
 			args:     []string{"scan", "./-weird"},
 			wantPath: []string{"./-weird"},
-			format:   formatHuman,
 		},
 	}
 
@@ -126,9 +115,6 @@ func TestParseArgsGrammar(t *testing.T) {
 			cmd, err := parseArgs(tt.args)
 			if err != nil {
 				t.Fatalf("parseArgs(%v): %v", tt.args, err)
-			}
-			if cmd.format != tt.format {
-				t.Errorf("format = %q, want %q", cmd.format, tt.format)
 			}
 			if cmd.stdin != tt.wantStdin {
 				t.Errorf("stdin = %v, want %v", cmd.stdin, tt.wantStdin)
@@ -182,9 +168,11 @@ func TestParseArgsRejects(t *testing.T) {
 	}{
 		{"unknown command", []string{"scanx"}, "unknown command"},
 		{"unknown flag", []string{"scan", "--nope"}, "unknown flag"},
-		{"unknown format", []string{"scan", "--format", "yaml"}, "unknown format"},
-		{"missing format value", []string{"scan", "--format"}, "needs a value"},
-		{"missing format value equals form", []string{"scan", "--format="}, "unknown format"},
+		// The format flag is gone rather than reduced to one value, so passing it
+		// is now an unknown flag. A caller who has a --format in a script finds
+		// out immediately instead of silently getting the one format there is.
+		{"the removed format flag", []string{"scan", "--format", "json"}, "unknown flag"},
+		{"the removed short format flag", []string{"scan", "-f", "json"}, "unknown flag"},
 	}
 
 	for _, tt := range tests {

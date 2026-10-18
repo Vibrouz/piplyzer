@@ -87,7 +87,6 @@ commands:
   scan      scan workflows and exit non-zero if anything blocks
 
 flags:
-  -f, --format <human|json>   output format (default human)
       --no-color              never colour the output
       --version               print the version
   -h, --help                  print this help
