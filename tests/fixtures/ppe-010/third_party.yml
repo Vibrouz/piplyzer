@@ -6,6 +6,9 @@
 # third-party action, a pinned one, and a whole other workflow. The local action
 # and the container step are here too and are not findings, because a local
 # action is code in this repository and a container is not a repository at all.
+#
+# None of these are owned by GitHub. Actions under actions/ and github/ are
+# exempt, and first_party.yml is the fixture that says so.
 name: third party references
 on:
   push:
@@ -17,7 +20,7 @@ jobs:
     steps:
       # The ordinary case. This is what nearly every repository has and it is the
       # reason this rule is Warn rather than Block.
-      - uses: actions/cache@0123456789abcdef0123456789abcdef01234567
+      - uses: example-org/cache@0123456789abcdef0123456789abcdef01234567
 
       # Pinned to a commit, which settles repointing and nothing else. The
       # finding fires anyway and says so, because a reader who has pinned is

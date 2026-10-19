@@ -26,6 +26,32 @@ func isPREvent(file *parse.File) bool {
 	return false
 }
 
+// privilegedPREvents are the pull request events that run with the base
+// repository's own token and secrets.
+//
+// The distinction from a plain pull_request is the whole point. A fork's
+// pull_request gets a read-only token and cannot see repository secrets, which is
+// what makes checking out the contributor's code there the ordinary way to test
+// a change. pull_request_target and workflow_run run with the base repository's
+// privileges even when a fork triggered them, which is what makes the same
+// checkout a problem there.
+//
+// Treating all three alike is what produced a rule 11 warning on a plain CI
+// workflow with a checkout and no permissions block, which is close to every
+// repository on GitHub and therefore the definition of noise.
+var privilegedPREvents = []string{"pull_request_target", "workflow_run"}
+
+// isPrivilegedPREvent reports whether the workflow runs a pull request's code with
+// the base repository's privileges.
+func isPrivilegedPREvent(file *parse.File) bool {
+	for _, event := range privilegedPREvents {
+		if file.Triggers.Has(event) {
+			return true
+		}
+	}
+	return false
+}
+
 // sensitiveJob reports whether a job can reach credentials.
 //
 // Rules 8 and 11 both need this and would drift if each defined it. A job is
@@ -53,8 +79,8 @@ func sensitiveJob(file *parse.File, job parse.Job) (bool, string) {
 	if permissions, ok := file.PermissionsFor(job.ID); ok && permissions.Grants("id-token") {
 		return true, "id-token: write lets it mint a cloud credential"
 	}
-	if isPREvent(file) && jobChecksOutCode(job) {
-		return true, "it checks out code on a pull request event"
+	if isPrivilegedPREvent(file) && jobChecksOutCode(job) {
+		return true, "it checks out code on a pull request target or workflow_run event, which carry the base repository's privileges"
 	}
 	return false, ""
 }

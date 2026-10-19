@@ -406,73 +406,68 @@ func TestRulesRunThroughTheEngine(t *testing.T) {
 		ids     []string
 	}{
 		// Rule 1 speaks about the ref, rule 10 about the contents, and neither
-		// suppresses the other. Pinning the refs in this next fixture silences
-		// rule 1 and not rule 10, which is the whole argument for the two rules
-		// being separate.
+		// suppresses the other. The two rules/checkout and rules/setup-node lines
+		// carry rule 1 alone, because GitHub's own actions are exempt from rule
+		// 10, and the other two carry both because they are third party.
 		{
 			"ppe-001/unpinned.yml",
 			[]string{
 				Rule1ID, Rule10ID,
 				Rule1ID, Rule10ID,
-				Rule1ID, Rule10ID,
-				Rule1ID, Rule10ID,
+				Rule1ID,
+				Rule1ID,
 			},
 		},
-		{"ppe-001/pinned.yml", []string{Rule10ID, Rule10ID, Rule10ID, Rule10ID}},
+		// Three hops, down from four: the pinned checkout is GitHub's own and is
+		// exempt. Rule 1 is silent throughout, which is the whole point of the
+		// two rules being separate for the references that remain.
+		{"ppe-001/pinned.yml", []string{Rule10ID, Rule10ID, Rule10ID}},
 		{"ppe-007/unfiltered.yml", []string{Rule7ID}},
 		{"ppe-007/filtered.yml", nil},
 		{
 			"ppe-008/dispatch-sensitive.yml",
 			[]string{Rule8ID, Rule10ID, Rule8ID, Rule8ID, Rule10ID},
 		},
-		{"ppe-008/dispatch-clean.yml", []string{Rule10ID}},
-		// Rule 9 finds the four privileged fetches, rule 2 the title echo, and
-		// rule 10 the four external references: three checkout actions plus the
-		// fork checkout whose repository: points at the attacker's copy. That
-		// last one is both a rule 9 and a rule 10 finding, which is the point:
-		// rule 9 says the job is privileged and runs fork code, rule 10 says the
-		// reference points somewhere this run is not scanning.
-		// Rule 11 joins the three privileged jobs, which have no permissions
-		// block and reach secrets on an event a fork can trigger.
+		{"ppe-008/dispatch-clean.yml", nil},
+		// Rule 9 finds the four privileged fetches and rule 2 the title echo. The
+		// three checkouts are actions/checkout, which is GitHub's own and so is
+		// exempt from rule 10: the actions rule 10 exists to catch are the third
+		// party ones. Rule 11 joins rule 9, since these jobs check out a
+		// contributor's code on pull_request_target, which is exactly the
+		// combination that is privileged. Note this is not about secrets, and none
+		// of these jobs hold any: it is the checkout that makes them sensitive, and
+		// only because the event is one of the privileged ones.
 		{
 			"ppe-009/pwn_request.yml",
 			[]string{
-				Rule11ID, Rule10ID, Rule9ID, Rule2ID,
-				Rule11ID, Rule10ID, Rule9ID,
-				Rule11ID, Rule10ID, Rule9ID, Rule9ID,
+				Rule11ID, Rule9ID, Rule2ID,
+				Rule11ID, Rule9ID,
+				Rule11ID, Rule9ID, Rule9ID,
 			},
 		},
-		// One hop, from the trusted checkout that makes the artifact hand-off
-		// pattern safe. Rule 9 is quiet about the pattern and rule 10 is not
-		// quiet about the checkout, which is the correct division.
-		// Rule 11 as well: this job runs on workflow_run, so it is a privileged
-		// trigger, and it has no permissions block, so it inherits a default that
-		// may be read-write. Three rules on one checkout is normal and none of
+		// Rule 11 only. The trusted checkout that makes the artifact hand-off
+		// pattern safe is actions/checkout, so rule 10 is quiet about it, and
+		// rule 9 is quiet about the pattern. Rule 11 fires because this job runs
+		// on workflow_run with no permissions block, so it inherits a default that
+		// may be read-write. Rules disagreeing about one job is normal and none of
 		// them suppress the others.
-		{"ppe-009/workflow_run.yml", []string{Rule11ID, Rule10ID}},
-		// Four hops from the four base-branch checkouts. This fixture asserts
-		// that rule 9 stays quiet on a privileged trigger with no untrusted
-		// fetch, and rule 10's opinion about the checkouts is independent.
-		// Four rule 11 findings for the four secret-bearing jobs on a privileged
-		// trigger with no permissions block, interleaved with the rule 10 hops.
-		// Rule 9 stays quiet about all of it, which is the point of the fixture.
-		{
-			"ppe-009/negatives.yml",
-			[]string{
-				Rule11ID, Rule10ID, Rule10ID,
-				Rule11ID, Rule10ID,
-				Rule11ID, Rule10ID,
-			},
-		},
+		{"ppe-009/workflow_run.yml", []string{Rule11ID}},
+		// No findings at all, and not even a rule 10 one: every reference here is
+		// a checkout of GitHub's own action, which is exempt.
+		//
+		// No rule 11 findings either. These jobs check out code on a privileged
+		// event, which used to make them sensitive, but none of them holds a
+		// secret or mints a token, so under the tightened definition they are not.
+		// Rule 9 is unaffected: it does not go through sensitiveJob.
+		{"ppe-009/negatives.yml", nil},
 		{"ppe-002/injected.yml", []string{Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID, Rule2ID}},
 		// One hop, from the fake action the fixture checks out. The fixture is
 		// about rule 2 finding nothing, and rule 10 has its own opinion about
 		// the same line, which is fine.
 		{"ppe-002/safe.yml", []string{Rule10ID}},
-		{
-			"ppe-006/split_job.yml",
-			[]string{Rule10ID, Rule10ID, Rule10ID, Rule10ID},
-		},
+		// Clean for every rule, and the checkouts here are actions/checkout, so the
+		// exemption means no rule 10 findings either.
+		{"ppe-006/split_job.yml", nil},
 		{"ppe-003/legitimate.yml", []string{Rule4ID, Rule4ID, Rule4ID}},
 		{"ppe-009/base_fetch.yml", nil},
 		// Three rule 10 hops, plus a rule 1 finding for the reusable workflow
@@ -499,17 +494,16 @@ func TestRulesRunThroughTheEngine(t *testing.T) {
 				Rule5ID, Rule5ID, Rule5ID,
 			},
 		},
+		// The three rule 6 findings. The checkouts are actions/checkout and so exempt
+		// from rule 10, which is why rule 10 does not join them here even though
+		// these references are SHA pinned. A pinned reference is still an
+		// unreadable one, but this one is unreadable and trusted.
 		{
-			// The three rule 6 findings, interleaved with a rule 10 finding for
-			// each actions/checkout. Those are SHA pinned, so rule 1 stays
-			// quiet, but they are still references into a repository this run
-			// does not scan, which is the whole point of rule 10. A pinned
-			// reference is still an unreadable one.
 			"ppe-006/correlated.yml",
 			[]string{
-				Rule6ID, Rule10ID,
-				Rule6ID, Rule10ID,
-				Rule6ID, Rule10ID,
+				Rule6ID,
+				Rule6ID,
+				Rule6ID,
 			},
 		},
 	}
@@ -668,10 +662,26 @@ func TestRule8SensitivityShapes(t *testing.T) {
 			reasoning: "there is no fork PR to check out",
 		},
 		{
-			name:      "checkout on a pull request event",
-			src:       "on:\n  workflow_dispatch:\n  pull_request:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n",
+			name:      "checkout on pull_request_target",
+			src:       "on:\n  workflow_dispatch:\n  pull_request_target:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n",
 			fired:     true,
-			reasoning: "checks out code on an event a contributor can trigger",
+			reasoning: "pull_request_target runs with the base repository's privileges, so a checkout there is sensitive",
+		},
+		{
+			// A plain pull_request is the ordinary CI shape. It gets a read-only
+			// token and no secrets, so counting its checkout as sensitive fired
+			// rule 8 and rule 11 on almost every repository, which is the noise
+			// that gets a gate switched off.
+			name:      "checkout on a plain pull_request is not sensitive",
+			src:       "on:\n  workflow_dispatch:\n  pull_request:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n",
+			fired:     false,
+			reasoning: "a fork's pull_request is read-only and secretless by design",
+		},
+		{
+			name:      "checkout on workflow_run",
+			src:       "on:\n  workflow_dispatch:\n  workflow_run:\n    workflows: [Build]\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n",
+			fired:     true,
+			reasoning: "workflow_run runs a job graph with a write token",
 		},
 		{
 			name:      "checkout on pull_request_target",
@@ -686,8 +696,8 @@ func TestRule8SensitivityShapes(t *testing.T) {
 			reasoning: "same, fixed by decision 18",
 		},
 		{
-			name:      "checkout after a step with no uses: on a pull request event",
-			src:       "on:\n  workflow_dispatch:\n  pull_request:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n      - uses: actions/checkout@v4\n",
+			name:      "checkout after a step with no uses: on a privileged event",
+			src:       "on:\n  workflow_dispatch:\n  pull_request_target:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n      - uses: actions/checkout@v4\n",
 			fired:     true,
 			reasoning: "the walk has to step over steps that have no uses: at all",
 		},
@@ -2262,10 +2272,55 @@ func TestRule10ThirdPartyReferences(t *testing.T) {
 	file, data := parseFixture(t, "ppe-010/third_party.yml")
 
 	assertFindings(t, Rule10(file), []want{
-		{Rule10ID, findings.SeverityWarn, lineOf(t, data, "actions/cache@")},
+		{Rule10ID, findings.SeverityWarn, lineOf(t, data, "example-org/cache@")},
 		{Rule10ID, findings.SeverityWarn, lineOf(t, data, "some-org/internal-tool@")},
 		{Rule10ID, findings.SeverityWarn, lineOf(t, data, "other-org/infra/")},
 	})
+}
+
+// Actions owned by GitHub are trusted by name and never reported, whether or not
+// the ref is pinned. This is the test that fails if the exemption is removed.
+func TestRule10IgnoresFirstPartyActions(t *testing.T) {
+	file, _ := parseFixture(t, "ppe-010/first_party.yml")
+
+	for _, f := range Rule10(file) {
+		if strings.Contains(f.Message, "actions/") || strings.Contains(f.Message, "github/") {
+			t.Errorf("a GitHub owned action was reported: %s", f.Message)
+		}
+	}
+
+	// The fixture holds exactly one third party reference, so rule 10 must have
+	// said something: a fixture that only contained trusted owners would pass
+	// whether or not the rule worked.
+	got := Rule10(file)
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1: only the example-org reference: %+v", len(got), got)
+	}
+	if !strings.Contains(got[0].Message, "example-org/checkout") {
+		t.Errorf("the wrong reference was reported: %s", got[0].Message)
+	}
+
+	// The exemption is rule 10's only. Rule 1 does not share it, because a tag is
+	// still movable regardless of who wrote the action.
+	if got := len(Rule1(file)); got != 2 {
+		t.Errorf("rule 1 = %d findings, want 2 for the two mutable refs", got)
+	}
+}
+
+// The owner match is on the name alone and does not care about case, because a
+// host is case insensitive and actions/Actions/Checkout is the same action.
+func TestRule10FirstPartyOwnerIsCaseInsensitive(t *testing.T) {
+	src := "on:\n  push:\n    branches: [main]\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n" +
+		"      - uses: Actions/Checkout@0123456789abcdef0123456789abcdef01234567\n" +
+		"      - uses: GitHub/codeql-action/init@0123456789abcdef0123456789abcdef01234567\n"
+	file, err := parse.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	if got := Rule10(file); len(got) != 0 {
+		t.Errorf("got %d findings, want 0: %+v", len(got), got)
+	}
 }
 
 // The same-org case, which needs a known repository, since a directory scan
@@ -2324,7 +2379,7 @@ func TestRule10IgnoresLocalAndContainerReferences(t *testing.T) {
 		"      - uses: ./build/action\n" +
 		"      - uses: ../other/action\n" +
 		"      - uses: docker://alpine:3.20\n" +
-		"      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567\n"
+		"      - uses: some-org/tool@0123456789abcdef0123456789abcdef01234567\n"
 	file, err := parse.Parse([]byte(src))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -2334,7 +2389,7 @@ func TestRule10IgnoresLocalAndContainerReferences(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d findings, want 1: %+v", len(got), got)
 	}
-	if !strings.Contains(got[0].Message, "actions/checkout") {
+	if !strings.Contains(got[0].Message, "some-org/tool") {
 		t.Errorf("the wrong reference was reported: %s", got[0].Message)
 	}
 }

@@ -67,6 +67,25 @@ type File struct {
 	// Jobs are in document order. A map would lose it, and job order decides
 	// output order.
 	Jobs []Job
+	// Notices are things about the file that are worth saying but did not stop
+	// it being read: a duplicate key, mostly.
+	//
+	// These are not findings. A finding is a rule deciding the workflow is
+	// dangerous, and a notice is the parser saying "I read this, and here is what
+	// you should know about how I read it". Keeping them apart means a rule
+	// cannot accidentally start reporting parser trivia as a security result.
+	Notices []Notice
+}
+
+// Notice is a non fatal observation about a parsed file, with the line it came
+// from so output can point at it.
+type Notice struct {
+	// Kind is a stable machine readable label, e.g. "duplicate-key".
+	Kind string
+	// Line is where it happened.
+	Line int
+	// Message explains it in a sentence.
+	Message string
 }
 
 // Repository identifies the GitHub repository a workflow belongs to.
@@ -265,6 +284,10 @@ func ParseFile(path string, data []byte) (*File, error) {
 	if err := p.file(root, file); err != nil {
 		return nil, err
 	}
+	// Notices are collected while reading and attached here, because the parser is
+	// the only thing that knew about them and this is the last point it is
+	// available.
+	file.Notices = p.notices
 	return file, nil
 }
 
@@ -281,6 +304,16 @@ func ParseWorkflow(path string, repo Repository, data []byte) (*File, error) {
 
 type parser struct {
 	path string
+	// notices accumulate as the file is read and are copied onto the File at the
+	// end. The parser is the only place that can know about them: a duplicate key
+	// is a fact about the text, and once it has been collapsed to last-one-wins
+	// there is nothing left in the tree to find it again.
+	notices []Notice
+}
+
+// notice records a non fatal observation about the file being parsed.
+func (p *parser) notice(kind string, line int, message string) {
+	p.notices = append(p.notices, Notice{Kind: kind, Line: line, Message: message})
 }
 
 // root decodes the single YAML document a workflow file is allowed to be.
@@ -601,12 +634,27 @@ type pair struct {
 	val     *yaml.Node
 }
 
-// pairs returns the entries of a mapping node in document order.
+// pairs returns the entries of a mapping node in document order, last-one-wins
+// on a duplicated key.
 //
-// A duplicate key is an error rather than last-one-wins. Two YAML readers that
-// disagree about which duplicate wins is a parser differential, and the loser
-// of that disagreement is whichever one this gate happens to run, which is
-// exactly the reader an attacker would want to disagree with.
+// This used to be a hard error, and that was wrong.
+//
+// The objection to last-one-wins is real: two YAML readers that disagree about
+// which duplicate survives is a parser differential, and the loser is whichever
+// reader happens to be running. But refusing the file does not remove that risk,
+// it just relocates it. GitHub accepts duplicate keys and takes the last one, so
+// erroring here means this gate fails a workflow that runs perfectly well in
+// production, on a file whose author made a mistake the platform is willing to
+// tolerate.
+//
+// For a security gate, blocking working workflows is the worse failure. A
+// duplicate key that this parser collapses differently from GitHub would be a
+// miss; refusing the file outright is a false block on every repository that has
+// one, and people disable gates that do that.
+//
+// So the resolution is to match the platform rather than argue with it: last value
+// wins, exactly as GitHub does, and a notice records that it happened so the
+// author is told the line above theirs never ran.
 func (p *parser) pairs(node *yaml.Node, what string) ([]pair, error) {
 	if p.isNull(node) {
 		return nil, nil
@@ -616,16 +664,32 @@ func (p *parser) pairs(node *yaml.Node, what string) ([]pair, error) {
 	}
 
 	out := make([]pair, 0, len(node.Content)/2)
+	// Index by key so a later duplicate can replace the earlier entry rather than
+	// being appended beside it. GitHub's own reader keeps the last one.
+	at := make(map[string]int, len(node.Content)/2)
 	firstSeen := make(map[string]int, len(node.Content)/2)
+
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		keyNode, valNode := node.Content[i], node.Content[i+1]
 		if keyNode.Kind != yaml.ScalarNode {
 			return nil, p.errf(keyNode.Line, "%s has a non scalar key", what)
 		}
 		if first, duplicate := firstSeen[keyNode.Value]; duplicate {
-			return nil, p.errf(keyNode.Line, "duplicate key %q in %s, first defined on line %d", keyNode.Value, what, first)
+			p.notice(
+				"duplicate-key",
+				keyNode.Line,
+				fmt.Sprintf("duplicate key %q in %s, first written on line %d: only the last one is used, so line %d never runs", keyNode.Value, what, first, first),
+			)
 		}
 		firstSeen[keyNode.Value] = keyNode.Line
+
+		if previous, replaced := at[keyNode.Value]; replaced {
+			// Replace in place so document order still reflects the file rather
+			// than the order the duplicates appeared in.
+			out[previous] = pair{key: keyNode.Value, keyNode: keyNode, val: valNode}
+			continue
+		}
+		at[keyNode.Value] = len(out)
 		out = append(out, pair{key: keyNode.Value, keyNode: keyNode, val: valNode})
 	}
 	return out, nil
