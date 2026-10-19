@@ -495,6 +495,9 @@ func TestRulesRunThroughTheEngine(t *testing.T) {
 			Rule13ID, Rule10ID,
 			Rule10ID,
 		}},
+		// Three findings, the two fields of a JSON secret and the whole
+		// context. The whole secret is silent.
+		{"ppe-014/unredacted.yml", []string{Rule14ID, Rule14ID, Rule14ID}},
 		// The rule 2 finding is the head.ref interpolation in the forged job,
 		// which is a genuinely injectable field and the third part of the Block.
 		{

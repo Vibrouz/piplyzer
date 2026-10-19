@@ -1,0 +1,40 @@
+# Rule 14: a secret read as a structured value is not redacted.
+#
+# Expected: 3 findings, all PPE-014, all Block.
+#
+# The runner hides a secret from the log by matching its exact value. A field
+# taken out of a secret is a different string, so it is printed in full.
+name: unredacted secrets
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      # Two findings, one per field. The secret holds a JSON document and the
+      # workflow takes one field out of it, so neither value is a string the
+      # runner knows to redact.
+      - name: publish with credentials
+        run: ./deploy.sh
+        env:
+          USERNAME: ${{ fromJSON(secrets.MY_SECRET).username }}
+          PASSWORD: ${{ fromJSON(secrets.MY_SECRET).password }}
+
+      # A finding. The whole secrets context in one value, so every secret in
+      # the repository is in the log at once.
+      - name: dump the context
+        run: echo "$ALL"
+        env:
+          ALL: ${{ toJSON(secrets) }}
+
+      # Not a finding. The secret is referred to as a whole, which is the shape
+      # the runner can redact.
+      - name: the ordinary way
+        run: ./deploy.sh
+        env:
+          PASSWORD: ${{ secrets.MY_SECRET_PASSWORD }}
