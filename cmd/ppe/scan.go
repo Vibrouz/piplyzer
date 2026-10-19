@@ -30,7 +30,7 @@ func scan(cmd command, stdin io.Reader, stdout, stderr io.Writer) int {
 	// with nothing separating them and made them read as another finding. Two
 	// files named boom.yml and bomba.yml, one scanned and one refused, came out
 	// looking like a list about one file.
-	report(stdout, scanned, unchecked, found)
+	report(stdout, scanned, unchecked, found, palette(cmd))
 
 	// A Block outranks an incomplete scan.
 	//
@@ -119,7 +119,7 @@ func runAll(found collection) ([]checked, []unreadable) {
 
 // report writes the whole result: a summary, then what could not be checked,
 // then the findings grouped by file.
-func report(w io.Writer, scanned []checked, bad []unreadable, found collection) {
+func report(w io.Writer, scanned []checked, bad []unreadable, found collection, c colour) {
 	var warns int
 	for _, c := range scanned {
 		for _, f := range c.findings {
@@ -181,7 +181,12 @@ func report(w io.Writer, scanned []checked, bad []unreadable, found collection) 
 			if f.finding.Severity.Blocking() {
 				tier = "BLOCK"
 			}
-			fmt.Fprintf(w, "  %-6s %s  %s\n", tier, f.finding.RuleID, f.finding.Location)
+			// The padding is computed on the visible width, not on the styled
+			// string, so the column lines up whether or not colour is on.
+			fmt.Fprintf(w, "  %s %s  %s\n",
+				padTo(c.tier(tier, f.finding.Severity.Blocking()), 6),
+				c.ruleID(f.finding.RuleID),
+				f.finding.Location)
 			fmt.Fprintf(w, "         %s\n", summarise(f.finding.Message))
 		}
 		fmt.Fprintln(w)
