@@ -134,6 +134,71 @@ func mentionsRealSecret(text string) bool {
 	return false
 }
 
+// jobUsesWorkflowToken reports whether any part of the job uses the workflow
+// token.
+//
+// The two spellings are github.token and secrets.GITHUB_TOKEN, and they are
+// the same credential. GitHub documents github.token as "functionally
+// equivalent to the GITHUB_TOKEN secret", so treating them as different
+// credentials would be wrong in the same way decision 23 says it is.
+//
+// The workflow token is available in every job, so a reference to it does not
+// make a job sensitive. It is a different question: the token's scope is
+// whatever the effective permissions say, and if nothing declares them the
+// scope is the repository default, which is read-write on anything created
+// before 2 Feb 2023. That is rule 11's question and nobody else's.
+//
+// Every place a job can carry an expression is checked, the same set that
+// jobReferencesRealSecret checks. A workflow that hides the reference in one
+// place we do not look is a workflow that gets skipped.
+func jobUsesWorkflowToken(job parse.Job) bool {
+	if valuesMentionWorkflowToken(job.Env) || valuesMentionWorkflowToken(job.With) ||
+		valuesMentionWorkflowToken(job.Secrets.Values) || mentionsWorkflowToken(job.If) {
+		return true
+	}
+	for _, step := range job.Steps {
+		if mentionsWorkflowToken(step.Run) || mentionsWorkflowToken(step.If) ||
+			valuesMentionWorkflowToken(step.With) || valuesMentionWorkflowToken(step.Env) {
+			return true
+		}
+	}
+	return false
+}
+
+// valuesMentionWorkflowToken reports whether any entry uses the workflow token.
+func valuesMentionWorkflowToken(values parse.Values) bool {
+	for _, entry := range values {
+		if mentionsWorkflowToken(entry.Text) {
+			return true
+		}
+	}
+	return false
+}
+
+// mentionsWorkflowToken reports whether the text refers to the workflow token.
+//
+// The github.token spelling is matched on its own, and the secrets.GITHUB_TOKEN
+// spelling is matched with the same prefix check that keeps it out of
+// mentionsRealSecret, so the two functions cannot disagree about whether a
+// given text is the workflow token or a real secret.
+func mentionsWorkflowToken(text string) bool {
+	if findSubstring(text, "github.token", 0) >= 0 {
+		return true
+	}
+	const marker = "secrets."
+	idx := 0
+	for {
+		pos := findSubstring(text, marker, idx)
+		if pos < 0 {
+			return false
+		}
+		if strings.HasPrefix(text[pos+len(marker):], "GITHUB_TOKEN") {
+			return true
+		}
+		idx = pos + len(marker) + len("GITHUB_TOKEN")
+	}
+}
+
 // findSubstring is strings.Index from an offset, kept here so the secret check
 // can keep scanning past a GITHUB_TOKEN reference.
 func findSubstring(s, sub string, from int) int {

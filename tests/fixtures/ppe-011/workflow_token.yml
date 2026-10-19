@@ -1,0 +1,56 @@
+# Rule 11: the workflow token with nothing declaring its scope.
+#
+# Expected: 2 Warn findings, both PPE-011.
+#
+# The workflow token is available in every job, so using it does not make a job
+# sensitive in the sense rules 8 and 11 usually mean. It is a different
+# question: the token's scope is whatever the effective permissions say, and
+# when nothing declares them the scope is the repository default, which is
+# read-write for anything created before 2 Feb 2023.
+#
+# This is the case decisions.md section 23 said rule 11 should gain.
+name: workflow token
+on:
+  push:
+    branches: [main]
+
+jobs:
+  # The two spellings of the same credential. GitHub documents github.token as
+  # "functionally equivalent to the GITHUB_TOKEN secret", so a rule that
+  # matched one and not the other would be wrong about half the workflows that
+  # use a token.
+  secrets-spelling:
+    runs-on: ubuntu-latest
+    steps:
+      - name: talk to the API
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api /repos/octocat/hello-world
+
+  context-spelling:
+    runs-on: ubuntu-latest
+    steps:
+      - name: talk to the API
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api /repos/octocat/hello-world
+
+  # Not a finding. The job uses the token but says what that token can do, so
+  # there is nothing to be over-privileged about.
+  declared:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: talk to the API
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api /repos/octocat/hello-world
+
+  # Not a finding. The job does not use the token at all, so it has nothing to
+  # be over-privileged about, and flagging every job that declares no
+  # permissions would be noise on a large share of real workflows.
+  no-token:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make test
