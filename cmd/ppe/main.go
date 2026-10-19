@@ -86,6 +86,9 @@ usage:
 commands:
   scan      scan workflows and exit non-zero if anything blocks
 
+Running ppe with no command is an error rather than a scan of the current
+directory, so that a mistyped command line cannot be read as a clean result.
+
 flags:
       --no-color              never colour the output
       --version               print the version

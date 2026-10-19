@@ -134,6 +134,36 @@ func TestParseArgsGrammar(t *testing.T) {
 	}
 }
 
+// A bare "ppe" with no arguments is an error, not a scan of the current
+// directory.
+//
+// The exit code is the part that matters. Exit 0 means the scan finished and
+// nothing blocks, so a CI step running "ppe" where it meant "ppe scan ." would
+// read a mistyped command line as a clean repository.
+func TestParseArgsRejectsNoCommand(t *testing.T) {
+	_, err := parseArgs([]string{})
+	if err == nil {
+		t.Fatal("parseArgs with no arguments succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), "no command given") {
+		t.Errorf("error = %q, want it to say no command was given", err)
+	}
+}
+
+// And the whole command does the same, so a CI step reading the exit code sees
+// a failure rather than a clean result.
+//
+// The arguments are genuinely empty here, which is what a bare "ppe" gives.
+func TestNoCommandExitsIncomplete(t *testing.T) {
+	_, stderr, code := scanArgs(t, "")
+	if code != exitIncomplete {
+		t.Errorf("exit = %d, want %d: a command that did not scan is not a clean scan", code, exitIncomplete)
+	}
+	if !strings.Contains(stderr, "no command given") {
+		t.Errorf("stderr does not say what was wrong: %s", stderr)
+	}
+}
+
 func TestParseArgsHelpAndVersion(t *testing.T) {
 	for _, tt := range []struct {
 		args []string
