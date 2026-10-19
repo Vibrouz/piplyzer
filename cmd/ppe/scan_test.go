@@ -281,6 +281,46 @@ func TestScanCleanWorkflowStillExitsZero(t *testing.T) {
 	}
 }
 
+// A file that is valid YAML but is not a workflow is not counted as one.
+//
+// The extension is not enough to tell them apart. A directory full of .yml
+// files can hold a config file that was never meant to be a workflow, and
+// counting one as a scanned workflow says the scan looked at something it did
+// not look at.
+func TestScanDoesNotCountANonWorkflowAsAScannedWorkflow(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		".github/workflows/ci.yml":     cleanWorkflow,
+		".github/workflows/config.yml": "key: value\nlist:\n  - a\n",
+	})
+
+	stdout, _, code := scanArgs(t, "", "scan", dir)
+
+	if !strings.Contains(stdout, "scanned 1 workflow") {
+		t.Errorf("the count includes a file that is not a workflow:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "1 other file not scanned") {
+		t.Errorf("the file that is not a workflow is not reported as skipped:\n%s", stdout)
+	}
+	// The workflow that was there was checked, so the scan is complete.
+	if code != exitOK {
+		t.Errorf("exit = %d, want %d: the real workflow was checked", code, exitOK)
+	}
+}
+
+// A file with only a config in it and no workflow is a scan that found nothing,
+// and that is not a clean scan.
+func TestScanOfOnlyANonWorkflowIsIncomplete(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		".github/workflows/config.yml": "key: value\n",
+	})
+
+	_, _, code := scanArgs(t, "", "scan", dir)
+
+	if code != exitIncomplete {
+		t.Errorf("exit = %d, want %d: nothing was checked", code, exitIncomplete)
+	}
+}
+
 // A missing path is a usage error and says which path.
 func TestScanMissingPath(t *testing.T) {
 	_, stderr, code := scanArgs(t, "", "scan", "no-such-directory")

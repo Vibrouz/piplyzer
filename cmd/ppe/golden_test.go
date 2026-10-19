@@ -130,6 +130,38 @@ func TestScanGoldenEmptyResult(t *testing.T) {
 	}
 }
 
+// The report for a scan where one of the files is not a workflow.
+//
+// The count says one workflow and the skip count says one file, which is the
+// point: a .yml file that is not a workflow is passed over and said so, not
+// counted as something the scan looked at.
+const goldenNotAWorkflow = `scanned 1 workflow, 0 blocks, 0 warnings, 1 other file not scanned
+
+`
+
+// A file that is valid YAML but is not a workflow is not counted as one.
+//
+// The extension is not enough to tell them apart, and counting a config file
+// as a scanned workflow says the scan looked at something it did not look at.
+func TestScanGoldenSkipsANonWorkflow(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		".github/workflows/ci.yml":     cleanWorkflow,
+		".github/workflows/config.yml": "key: value\nlist:\n  - a\n",
+	})
+
+	stdout, stderr, code := scanArgs(t, "", "scan", dir)
+
+	if stdout != goldenNotAWorkflow {
+		t.Errorf("output does not match:\n--- got ---\n%s\n--- want ---\n%s", stdout, goldenNotAWorkflow)
+	}
+	if code != exitOK {
+		t.Errorf("exit = %d, want %d: the real workflow was checked", code, exitOK)
+	}
+	if stderr != "" {
+		t.Errorf("unexpected stderr:\n%s", stderr)
+	}
+}
+
 // The whole report, exactly as it comes out.
 func TestScanGoldenOutput(t *testing.T) {
 	tests := []struct {

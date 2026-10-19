@@ -32,7 +32,13 @@ func runWith(cmd command, stdin io.Reader, stdout, stderr io.Writer, c colour) i
 		return exitIncomplete
 	}
 
-	scanned, unchecked := runAll(found)
+	scanned, unchecked, notWorkflows := runAll(found)
+
+	// Files that parsed but are not workflows are counted as skipped, the same
+	// as files that never had a workflow extension. The count is the one in the
+	// summary line, so the reader can see that something was passed over rather
+	// than having to wonder where it went.
+	found.skipped[skipNotWorkflow] += notWorkflows
 
 	// Everything on stdout, in one place.
 	//
@@ -117,9 +123,15 @@ type unreadable struct {
 // A file that cannot be parsed does not stop the others. One broken workflow
 // hiding every problem in the repository is the failure this shape exists to
 // avoid.
-func runAll(found collection) ([]checked, []unreadable) {
+//
+// A file that parses but is not a workflow is neither scanned nor an error. It
+// is counted as skipped, the same as a file that never had a workflow
+// extension, because counting it as a scanned workflow says the scan looked at
+// something it did not look at.
+func runAll(found collection) ([]checked, []unreadable, int) {
 	var out []checked
 	var bad []unreadable
+	notWorkflows := 0
 
 	for _, src := range found.sources {
 		// The name rather than the path, so a stdin finding renders as
@@ -132,6 +144,10 @@ func runAll(found collection) ([]checked, []unreadable) {
 			bad = append(bad, unreadable{path: src.name(), err: err})
 			continue
 		}
+		if !file.IsWorkflow() {
+			notWorkflows++
+			continue
+		}
 		out = append(out, checked{
 			path:     src.path,
 			findings: rules.NewEngine().Run(file),
@@ -139,7 +155,7 @@ func runAll(found collection) ([]checked, []unreadable) {
 		})
 	}
 
-	return out, bad
+	return out, bad, notWorkflows
 }
 
 // report writes the whole result: a summary, then what could not be checked,
