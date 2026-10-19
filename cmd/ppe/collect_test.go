@@ -220,6 +220,150 @@ func TestCollectNoWorkflows(t *testing.T) {
 	}
 }
 
+// The same file named twice is scanned once.
+//
+// Naming a path twice is the most ordinary way to reach the same file, and
+// scanning it twice printed every finding twice and counted it twice, which
+// reads as two problems where there is one.
+func TestCollectScansARepeatedPathOnce(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		".github/workflows/ci.yml": workflow,
+	})
+	file := filepath.Join(root, ".github/workflows/ci.yml")
+
+	got, err := collect(mustCmd(t, []string{"scan", file, file}), strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if len(got.sources) != 1 {
+		t.Errorf("got %d sources, want 1: %v", len(got.sources), got.sources)
+	}
+}
+
+// Two spellings of the same path are the same file, and the comparison is on
+// the resolved path rather than on the string the user typed.
+func TestCollectTreatsEquivalentPathsAsOne(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		".github/workflows/ci.yml": workflow,
+	})
+	dir := filepath.Join(root, ".github/workflows")
+
+	got, err := collect(mustCmd(t, []string{"scan",
+		filepath.Join(dir, "ci.yml"),
+		filepath.Join(dir, ".", "ci.yml"),
+	}), strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if len(got.sources) != 1 {
+		t.Errorf("got %d sources, want 1: %v", len(got.sources), got.sources)
+	}
+}
+
+// A file named on the command line and also found by a directory walk is
+// scanned once, not twice.
+func TestCollectScansAnExplicitlyNamedFileOnce(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		".github/workflows/ci.yml": workflow,
+	})
+	file := filepath.Join(root, ".github/workflows/ci.yml")
+
+	got, err := collect(mustCmd(t, []string{"scan", root, file}), strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if len(got.sources) != 1 {
+		t.Errorf("got %d sources, want 1: %v", len(got.sources), got.sources)
+	}
+}
+
+// A directory whose name ends in .yml is an error, not an empty scan.
+//
+// Walking it would find no workflows, so the scan would report nothing and
+// exit 0, which reads as a clean result. The path cannot be read as a workflow
+// and saying so is the truth.
+func TestCollectRejectsADirectoryNamedLikeAWorkflow(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "workflows.yml")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	_, err := collect(mustCmd(t, []string{"scan", dir}), strings.NewReader(""))
+	if err == nil {
+		t.Fatal("collect succeeded, want an error for a directory named like a workflow")
+	}
+	if !strings.Contains(err.Error(), "directory") {
+		t.Errorf("error = %q, want it to say it is a directory", err)
+	}
+	if !strings.Contains(err.Error(), dir) {
+		t.Errorf("error = %q, want it to name the path", err)
+	}
+}
+
+// The key used for recognising an already-scanned file is the resolved path,
+// so the spellings of one file agree.
+func TestAbsolutePathResolvesSpellings(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "ci.yml")
+
+	same := []string{
+		file,
+		filepath.Join(dir, ".", "ci.yml"),
+		filepath.Join(dir, "sub", "..", "ci.yml"),
+	}
+	want := absolutePath(file)
+
+	for _, path := range same {
+		if got := absolutePath(path); got != want {
+			t.Errorf("absolutePath(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+// The fallback for a path that cannot be made absolute.
+//
+// Making a path absolute needs the working directory, and the working
+// directory can be deleted out from under the process. The scan still has to
+// produce a key in that case, and the path as written is the best one
+// available.
+func TestAbsolutePathFallsBackWhenTheWorkingDirectoryIsGone(t *testing.T) {
+	dir, err := os.MkdirTemp("", "gonewd")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+
+	// Move into it, then delete it. The process is now in a directory that
+	// does not exist.
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() {
+		// Restore the working directory before the temporary directory is
+		// removed, or the cleanup itself fails.
+		os.Chdir(previous)
+		os.RemoveAll(dir)
+	})
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+
+	// The key is still a usable one, and the same path always gives the same
+	// key, which is what deduplication needs.
+	first := absolutePath("workflows/ci.yml")
+	second := absolutePath("workflows/ci.yml")
+	if first != second {
+		t.Errorf("the fallback is not stable: %q and %q", first, second)
+	}
+	if first == "" {
+		t.Error("the fallback produced an empty key")
+	}
+}
+
 func mustCmd(t *testing.T, args []string) command {
 	t.Helper()
 	cmd, err := parseArgs(args)

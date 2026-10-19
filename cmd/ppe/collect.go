@@ -75,6 +75,18 @@ func collect(cmd command, stdin io.Reader) (collection, error) {
 	var c collection
 	c.skipped = map[string]int{}
 
+	// Paths the user named, and whether they have been visited.
+	//
+	// The same file can be reached by more than one path: named twice on the
+	// command line, or named once and also found by a directory walk. Scanning
+	// it twice prints every finding twice and inflates the count, which reads
+	// as two problems where there is one.
+	//
+	// The key is the cleaned absolute path rather than the string the user
+	// typed, so that "workflows/ci.yml" and "./workflows/ci.yml" are the same
+	// file. A string comparison would treat those as two.
+	seen := map[string]bool{}
+
 	for _, path := range cmd.paths {
 		info, err := os.Stat(path)
 		if err != nil {
@@ -85,7 +97,17 @@ func collect(cmd command, stdin io.Reader) (collection, error) {
 		}
 
 		if info.IsDir() {
-			if err := collectDir(&c, path); err != nil {
+			// A directory whose name ends in .yml or .yaml is almost certainly a
+			// mistake: a file the user meant to scan, which is a directory here.
+			//
+			// Walking it would find no workflows, and the scan would report
+			// nothing and exit 0, which reads as a clean result. Treating it as
+			// an error says what is actually true, which is that the path
+			// cannot be read as a workflow.
+			if isWorkflowFile(path) {
+				return c, fmt.Errorf("cannot read %s: it is a directory, not a workflow file", path)
+			}
+			if err := collectDir(&c, path, seen); err != nil {
 				return c, err
 			}
 			continue
@@ -95,6 +117,11 @@ func collect(cmd command, stdin io.Reader) (collection, error) {
 			c.skipped[skipNotWorkflow]++
 			continue
 		}
+		if seen[absolutePath(path)] {
+			continue
+		}
+		seen[absolutePath(path)] = true
+
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return c, fmt.Errorf("cannot read %s: %w", path, err)
@@ -132,9 +159,9 @@ func collect(cmd command, stdin io.Reader) (collection, error) {
 //
 // Treating the second as "look for .github/workflows inside it" finds nothing,
 // which is a confusing way for a valid command to report a clean repository.
-func collectDir(c *collection, root string) error {
+func collectDir(c *collection, root string, seen map[string]bool) error {
 	if isWorkflowDir(root) {
-		return walkWorkflows(c, root)
+		return walkWorkflows(c, root, seen)
 	}
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -148,10 +175,28 @@ func collectDir(c *collection, root string) error {
 			return nil
 		}
 		if isWorkflowDir(path) {
-			return walkWorkflows(c, path)
+			return walkWorkflows(c, path, seen)
 		}
 		return nil
 	})
+}
+
+// absolutePath is the cleaned absolute form of a path, used as the key for
+// recognising a file that has already been scanned.
+//
+// The absolute form is what makes the key correct: "ci.yml" and
+// "./ci.yml" are the same file, and so are "dir/ci.yml" and "dir/../dir/ci.yml".
+// Comparing the strings the user typed would treat them as different files and
+// scan one of them twice.
+//
+// The fallback for a path that cannot be made absolute is the cleaned path as
+// written, which is the next best key and still better than not deduplicating.
+func absolutePath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return abs
 }
 
 // isWorkflowDir reports whether a directory is a workflow directory, either
@@ -162,7 +207,7 @@ func isWorkflowDir(path string) bool {
 }
 
 // walkWorkflows collects every workflow file under a workflow directory.
-func walkWorkflows(c *collection, root string) error {
+func walkWorkflows(c *collection, root string, seen map[string]bool) error {
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			c.skipped[skipUnreadable]++
@@ -175,6 +220,12 @@ func walkWorkflows(c *collection, root string) error {
 			c.skipped[skipNotWorkflow]++
 			return nil
 		}
+		// A file the user also named explicitly is not scanned twice.
+		if seen[absolutePath(path)] {
+			return nil
+		}
+		seen[absolutePath(path)] = true
+
 		data, readErr := os.ReadFile(path)
 		if readErr != nil {
 			c.skipped[skipUnreadable]++
