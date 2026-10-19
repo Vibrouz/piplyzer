@@ -15,7 +15,17 @@ import (
 //
 // It is the seam the rest of the CLI builds on: parsed arguments in, streams out,
 // and nothing else it has to know about.
+//
+// The colour decision is made here and passed in, so that the work below does
+// not have to know how the decision was reached. That split is what lets a test
+// render the coloured report: the decision depends on whether stdout is a
+// terminal, and a test's stdout is not one.
 func scan(cmd command, stdin io.Reader, stdout, stderr io.Writer) int {
+	return runWith(cmd, stdin, stdout, stderr, palette(cmd))
+}
+
+// runWith is scan, with the colour decided in advance.
+func runWith(cmd command, stdin io.Reader, stdout, stderr io.Writer, c colour) int {
 	found, err := collect(cmd, stdin)
 	if err != nil {
 		fmt.Fprintf(stderr, "usage: %v\n", err)
@@ -30,7 +40,7 @@ func scan(cmd command, stdin io.Reader, stdout, stderr io.Writer) int {
 	// with nothing separating them and made them read as another finding. Two
 	// files named boom.yml and bomba.yml, one scanned and one refused, came out
 	// looking like a list about one file.
-	report(stdout, scanned, unchecked, found, palette(cmd))
+	report(stdout, scanned, unchecked, found, c)
 
 	// A Block outranks an incomplete scan.
 	//
