@@ -38,6 +38,7 @@ var checks = []Rule{
 	Rule10,
 	Rule11,
 	Rule12,
+	Rule13,
 }
 
 // Engine runs the rules against a workflow.

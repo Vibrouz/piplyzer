@@ -426,7 +426,11 @@ func TestRulesRunThroughTheEngine(t *testing.T) {
 		{"ppe-007/filtered.yml", nil},
 		{
 			"ppe-008/dispatch-sensitive.yml",
-			[]string{Rule8ID, Rule10ID, Rule8ID, Rule8ID, Rule10ID},
+			// The rule 13 finding is on the secrets-inherit job, which hands
+			// every secret to a workflow in another repository. It is a real
+			// finding and it is on the same line as a rule 10 hop, which is
+			// what the earlier version of this fixture was already teaching.
+			[]string{Rule8ID, Rule13ID, Rule10ID, Rule8ID, Rule8ID, Rule10ID},
 		},
 		{"ppe-008/dispatch-clean.yml", nil},
 		// Rule 9 finds the four privileged fetches and rule 2 the title echo. The
@@ -483,6 +487,14 @@ func TestRulesRunThroughTheEngine(t *testing.T) {
 		// Two findings, one per spelling of the workflow token, and the two
 		// jobs in the fixture that do not use it stay silent.
 		{"ppe-011/workflow_token.yml", []string{Rule11ID, Rule11ID}},
+		// Two rule 13 findings, the two calls that hand over every secret, and
+		// three rule 10 hops, the three calls that point at another repository.
+		// The local call and the explicit one are silent for rule 13.
+		{"ppe-013/secrets_inherit.yml", []string{
+			Rule13ID, Rule10ID,
+			Rule13ID, Rule10ID,
+			Rule10ID,
+		}},
 		// The rule 2 finding is the head.ref interpolation in the forged job,
 		// which is a genuinely injectable field and the third part of the Block.
 		{
