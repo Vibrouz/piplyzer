@@ -23,7 +23,12 @@ import (
 // diagnosable: the same version on both sides means one side has a bug,
 // different versions means one side is running stale checks. Bump it whenever
 // the behavior of a check changes, not on every release.
-const RulesetVersion = "1.0.0"
+//
+// 1.1.0 added rules 13 and 14, both of which are Block tier, so a binary
+// running this version and one running 1.0.0 disagree about the same workflow:
+// the older one reports fewer findings and can pass a merge the newer one
+// stops. That disagreement is exactly what this field exists to make visible.
+const RulesetVersion = "1.1.0"
 
 // Severity is the triage tier of a finding.
 //
