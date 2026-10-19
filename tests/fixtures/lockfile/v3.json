@@ -1,0 +1,45 @@
+{
+  "name": "fixtures",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "fixtures",
+      "version": "1.0.0",
+      "license": "ISC",
+      "dependencies": {
+        "plain": "^1.0.0",
+        "with-install-script": "^2.0.0"
+      }
+    },
+    "node_modules/plain": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/plain/-/plain-1.0.0.tgz",
+      "integrity": "sha512-plain"
+    },
+    "node_modules/with-install-script": {
+      "version": "2.0.0",
+      "resolved": "https://registry.npmjs.org/with-install-script/-/with-install-script-2.0.0.tgz",
+      "integrity": "sha512-script",
+      "hasInstallScript": true,
+      "bin": {
+        "with-install-script": "bin/cli.js"
+      },
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/parent/node_modules/nested": {
+      "version": "0.1.0",
+      "resolved": "https://registry.npmjs.org/nested/-/nested-0.1.0.tgz",
+      "integrity": "sha512-nested",
+      "dev": true
+    },
+    "node_modules/parent": {
+      "version": "3.0.0",
+      "resolved": "https://registry.npmjs.org/parent/-/parent-3.0.0.tgz",
+      "integrity": "sha512-parent"
+    }
+  }
+}
