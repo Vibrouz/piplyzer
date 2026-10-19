@@ -307,6 +307,61 @@ func TestTriggersAbsent(t *testing.T) {
 	}
 }
 
+// A file is a workflow when it has an on: block or a jobs: block, and not
+// otherwise.
+//
+// The distinction is that a .yml file which is valid YAML but is not a
+// workflow is a config file that was never meant to be one, and counting it as
+// a scanned workflow says the scan looked at something it did not look at.
+func TestIsWorkflow(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want bool
+	}{
+		{
+			name: "both blocks",
+			src:  "on:\n  push:\n    branches: [main]\njobs:\n  j:\n    runs-on: ubuntu-latest\n",
+			want: true,
+		},
+		{
+			// A workflow under construction looks like this, and the rules have
+			// something to say about a job with no trigger.
+			name: "jobs only",
+			src:  "jobs:\n  j:\n    runs-on: ubuntu-latest\n",
+			want: true,
+		},
+		{
+			// And so does this one, the other way round.
+			name: "triggers only",
+			src:  "on:\n  push:\n    branches: [main]\n",
+			want: true,
+		},
+		{
+			name: "neither block",
+			src:  "key: value\nlist:\n  - a\n",
+			want: false,
+		},
+		{
+			name: "an empty mapping",
+			src:  "{}\n",
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := parse.Parse([]byte(tt.src))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if got := file.IsWorkflow(); got != tt.want {
+				t.Errorf("IsWorkflow = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // uses: appears at three locations. A step-only walk misses reusable workflow
 // calls, which are the more dangerous case because the jobs run in a repository
 // ppe does not scan.

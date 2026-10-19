@@ -426,7 +426,11 @@ func TestRulesRunThroughTheEngine(t *testing.T) {
 		{"ppe-007/filtered.yml", nil},
 		{
 			"ppe-008/dispatch-sensitive.yml",
-			[]string{Rule8ID, Rule10ID, Rule8ID, Rule8ID, Rule10ID},
+			// The rule 13 finding is on the secrets-inherit job, which hands
+			// every secret to a workflow in another repository. It is a real
+			// finding and it is on the same line as a rule 10 hop, which is
+			// what the earlier version of this fixture was already teaching.
+			[]string{Rule8ID, Rule13ID, Rule10ID, Rule8ID, Rule8ID, Rule10ID},
 		},
 		{"ppe-008/dispatch-clean.yml", nil},
 		// Rule 9 finds the four privileged fetches and rule 2 the title echo. The
@@ -480,6 +484,20 @@ func TestRulesRunThroughTheEngine(t *testing.T) {
 		},
 		{"ppe-010/same_org.yml", []string{Rule10ID, Rule10ID}},
 		{"ppe-011/overgrant.yml", []string{Rule11ID, Rule11ID}},
+		// Two findings, one per spelling of the workflow token, and the two
+		// jobs in the fixture that do not use it stay silent.
+		{"ppe-011/workflow_token.yml", []string{Rule11ID, Rule11ID}},
+		// Two rule 13 findings, the two calls that hand over every secret, and
+		// three rule 10 hops, the three calls that point at another repository.
+		// The local call and the explicit one are silent for rule 13.
+		{"ppe-013/secrets_inherit.yml", []string{
+			Rule13ID, Rule10ID,
+			Rule13ID, Rule10ID,
+			Rule10ID,
+		}},
+		// Three findings, the two fields of a JSON secret and the whole
+		// context. The whole secret is silent.
+		{"ppe-014/unredacted.yml", []string{Rule14ID, Rule14ID, Rule14ID}},
 		// The rule 2 finding is the head.ref interpolation in the forged job,
 		// which is a genuinely injectable field and the third part of the Block.
 		{
@@ -2637,6 +2655,191 @@ func TestRule11IgnoresJobsWithNothingToProtect(t *testing.T) {
 	}
 	if got := Rule11(file); len(got) != 0 {
 		t.Errorf("got %d findings, want 0: %+v", len(got), got)
+	}
+}
+
+// A job that uses the workflow token with nothing declaring its scope.
+//
+// The workflow token is available in every job, so using it does not make a
+// job sensitive. It is a different question: the token's scope is whatever
+// the effective permissions say, and when nothing declares them the scope is
+// the repository default, which is read-write on anything created before
+// 2 Feb 2023.
+//
+// This is the case decisions.md section 23 said rule 11 should gain.
+func TestRule11WorkflowTokenWithNoPermissionsBlock(t *testing.T) {
+	file, data := parseFixture(t, "ppe-011/workflow_token.yml")
+
+	assertFindings(t, Rule11(file), []want{
+		{Rule11ID, findings.SeverityWarn, lineOf(t, data, "  secrets-spelling:")},
+		{Rule11ID, findings.SeverityWarn, lineOf(t, data, "  context-spelling:")},
+	})
+}
+
+// The two spellings of the workflow token are the same credential.
+//
+// GitHub documents github.token as "functionally equivalent to the GITHUB_TOKEN
+// secret", so a rule that matched one and not the other would be wrong about
+// half the workflows that use a token.
+func TestRule11BothWorkflowTokenSpellings(t *testing.T) {
+	for _, spelling := range []string{
+		"secrets.GITHUB_TOKEN",
+		"github.token",
+	} {
+		t.Run(spelling, func(t *testing.T) {
+			src := "on:\n  push:\n    branches: [main]\njobs:\n  j:\n    runs-on: ubuntu-latest\n" +
+				"    steps:\n      - run: echo \"${{ " + spelling + " }}\"\n"
+			file, err := parse.Parse([]byte(src))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if got := len(Rule11(file)); got != 1 {
+				t.Errorf("got %d findings, want 1: %+v", got, got)
+			}
+		})
+	}
+}
+
+// The workflow token is a secret reference, but it is the one secret that does
+// not make a job sensitive, so it must not be counted as a repository secret
+// anywhere. The two functions have to agree, or one of them is wrong.
+func TestWorkflowTokenIsNotCountedAsARealSecret(t *testing.T) {
+	for _, text := range []string{
+		"${{ secrets.GITHUB_TOKEN }}",
+		"${{ github.token }}",
+	} {
+		if mentionsRealSecret(text) {
+			t.Errorf("%q is counted as a repository secret", text)
+		}
+	}
+	for _, text := range []string{
+		"${{ secrets.DEPLOY_TOKEN }}",
+		"${{ secrets.GITHUB_TOKEN }}-${{ secrets.OTHER }}",
+	} {
+		if !mentionsRealSecret(text) {
+			t.Errorf("%q is not counted as a repository secret", text)
+		}
+	}
+}
+
+// A job that uses the workflow token but declares its permissions is silent,
+// because there is nothing left to be over-privileged about.
+func TestRule11WorkflowTokenWithDeclaredPermissionsIsSilent(t *testing.T) {
+	for _, perms := range []string{
+		"    permissions:\n      contents: read\n",
+		"    permissions: read-all\n",
+	} {
+		src := "on:\n  push:\n    branches: [main]\njobs:\n  j:\n    runs-on: ubuntu-latest\n" +
+			perms + "    steps:\n      - run: echo \"${{ secrets.GITHUB_TOKEN }}\"\n"
+		file, err := parse.Parse([]byte(src))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if got := len(Rule11(file)); got != 0 {
+			t.Errorf("got %d findings, want 0: %+v", got, got)
+		}
+	}
+}
+
+// A job that does not use the workflow token is silent, even with no
+// permissions block. Flagging every job in every repository that declares no
+// permissions would be noise on a large share of real workflows.
+func TestRule11NoWorkflowTokenIsSilent(t *testing.T) {
+	src := "on:\n  push:\n    branches: [main]\njobs:\n  j:\n    runs-on: ubuntu-latest\n" +
+		"    steps:\n      - run: make test\n"
+	file, err := parse.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := len(Rule11(file)); got != 0 {
+		t.Errorf("got %d findings, want 0: %+v", got, got)
+	}
+}
+
+// Every place a job can carry an expression is checked.
+//
+// A workflow that hides the token reference in one place the rule does not look
+// is a workflow that gets skipped, and the places are the job env, the job
+// with, the job secrets block, the job condition, and the same four on each
+// step.
+func TestRule11FindsTheWorkflowTokenInEveryPlaceAJobCarriesOne(t *testing.T) {
+	places := []struct {
+		name string
+		src  string
+	}{
+		{
+			"the job env",
+			"on:\n  push:\n    branches: [main]\njobs:\n  j:\n    runs-on: ubuntu-latest\n" +
+				"    env:\n      T: ${{ secrets.GITHUB_TOKEN }}\n    steps:\n      - run: echo hi\n",
+		},
+		{
+			"the job with",
+			"on:\n  push:\n    branches: [main]\njobs:\n  j:\n    runs-on: ubuntu-latest\n" +
+				"    with:\n      T: ${{ secrets.GITHUB_TOKEN }}\n    steps:\n      - run: echo hi\n",
+		},
+		{
+			"the job secrets block",
+			"on:\n  push:\n    branches: [main]\njobs:\n  j:\n    runs-on: ubuntu-latest\n" +
+				"    secrets:\n      T: ${{ secrets.GITHUB_TOKEN }}\n    steps:\n      - run: echo hi\n",
+		},
+		{
+			"the job condition",
+			"on:\n  push:\n    branches: [main]\njobs:\n  j:\n    runs-on: ubuntu-latest\n" +
+				"    if: ${{ secrets.GITHUB_TOKEN != '' }}\n    steps:\n      - run: echo hi\n",
+		},
+		{
+			"a step env",
+			"on:\n  push:\n    branches: [main]\njobs:\n  j:\n    runs-on: ubuntu-latest\n" +
+				"    steps:\n      - run: echo hi\n        env:\n          T: ${{ secrets.GITHUB_TOKEN }}\n",
+		},
+		{
+			"a step with",
+			"on:\n  push:\n    branches: [main]\njobs:\n  j:\n    runs-on: ubuntu-latest\n" +
+				"    steps:\n      - uses: actions/checkout@v4\n        with:\n          T: ${{ secrets.GITHUB_TOKEN }}\n",
+		},
+		{
+			"a step script",
+			"on:\n  push:\n    branches: [main]\njobs:\n  j:\n    runs-on: ubuntu-latest\n" +
+				"    steps:\n      - run: echo \"${{ secrets.GITHUB_TOKEN }}\"\n",
+		},
+		{
+			"a step condition",
+			"on:\n  push:\n    branches: [main]\njobs:\n  j:\n    runs-on: ubuntu-latest\n" +
+				"    steps:\n      - run: echo hi\n        if: ${{ secrets.GITHUB_TOKEN != '' }}\n",
+		},
+	}
+
+	for _, tt := range places {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := parse.Parse([]byte(tt.src))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if got := len(Rule11(file)); got != 1 {
+				t.Errorf("got %d findings, want 1: %+v", got, got)
+			}
+		})
+	}
+}
+
+// The OIDC Block outranks this Warn. A job with id-token: write on a pull
+// request event and untrusted input is the more serious finding, and reporting
+// it as a plain over-grant would understate it.
+func TestRule11OIDCBlockOutranksTheWorkflowTokenWarn(t *testing.T) {
+	src := "on:\n  pull_request_target:\n    types: [opened]\njobs:\n  j:\n" +
+		"    runs-on: ubuntu-latest\n    permissions:\n      id-token: write\n      contents: read\n" +
+		"    steps:\n      - run: echo \"${{ github.event.pull_request.title }}\"\n"
+	file, err := parse.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	got := Rule11(file)
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(got), got)
+	}
+	if got[0].Severity != findings.SeverityBlock {
+		t.Errorf("severity = %q, want Block", got[0].Severity)
 	}
 }
 

@@ -115,6 +115,25 @@ func (f *File) Job(id string) (Job, bool) {
 	return Job{}, false
 }
 
+// IsWorkflow reports whether the file looks like a workflow at all.
+//
+// GitHub requires two things in a workflow file: an on: block, so the
+// workflow has something to trigger it, and a jobs: block, so it has something
+// to do. A YAML file with neither is not a workflow that happens to be quiet,
+// it is a file that is not a workflow.
+//
+// The distinction matters because the extension is not enough to tell them
+// apart. A directory full of .yml files can hold a config file that was never
+// meant to be a workflow, and counting one as a scanned workflow says the
+// scan looked at something it did not look at.
+//
+// A file with an on: block but no jobs: is still a workflow, and so is one
+// with jobs: but no on:, because a workflow under construction looks like that
+// and the rules have something to say about both.
+func (f *File) IsWorkflow() bool {
+	return f.Triggers.Present || len(f.Jobs) > 0
+}
+
 // PermissionsFor returns the permissions block that governs a job: the job's
 // own block if it has one, otherwise the workflow level block.
 //

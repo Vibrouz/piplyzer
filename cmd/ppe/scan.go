@@ -32,7 +32,13 @@ func runWith(cmd command, stdin io.Reader, stdout, stderr io.Writer, c colour) i
 		return exitIncomplete
 	}
 
-	scanned, unchecked := runAll(found)
+	scanned, unchecked, notWorkflows := runAll(found)
+
+	// Files that parsed but are not workflows are counted as skipped, the same
+	// as files that never had a workflow extension. The count is the one in the
+	// summary line, so the reader can see that something was passed over rather
+	// than having to wonder where it went.
+	found.skipped[skipNotWorkflow] += notWorkflows
 
 	// Everything on stdout, in one place.
 	//
@@ -52,6 +58,21 @@ func runWith(cmd command, stdin io.Reader, stdout, stderr io.Writer, c colour) i
 		return exitBlocked
 	}
 	if len(unchecked) > 0 {
+		return exitIncomplete
+	}
+	// Finding no workflows at all is also an incomplete scan.
+	//
+	// This is the difference between "I looked and there is nothing wrong" and
+	// "I looked at nothing". A gate that reports the second as the first is a
+	// gate that passes on a mistyped path, on a repository whose workflows live
+	// somewhere else, or on a checkout that did not include them. Every one of
+	// those is a false clean, and a false clean in a merge gate is worse than a
+	// false alarm, because nobody looks at a gate that says the repository is
+	// fine.
+	//
+	// The remedy is the same as for a parse error: run the scan again against
+	// the right path. The difference is only in what went wrong.
+	if len(scanned) == 0 {
 		return exitIncomplete
 	}
 	return exitOK
@@ -102,9 +123,15 @@ type unreadable struct {
 // A file that cannot be parsed does not stop the others. One broken workflow
 // hiding every problem in the repository is the failure this shape exists to
 // avoid.
-func runAll(found collection) ([]checked, []unreadable) {
+//
+// A file that parses but is not a workflow is neither scanned nor an error. It
+// is counted as skipped, the same as a file that never had a workflow
+// extension, because counting it as a scanned workflow says the scan looked at
+// something it did not look at.
+func runAll(found collection) ([]checked, []unreadable, int) {
 	var out []checked
 	var bad []unreadable
+	notWorkflows := 0
 
 	for _, src := range found.sources {
 		// The name rather than the path, so a stdin finding renders as
@@ -117,6 +144,10 @@ func runAll(found collection) ([]checked, []unreadable) {
 			bad = append(bad, unreadable{path: src.name(), err: err})
 			continue
 		}
+		if !file.IsWorkflow() {
+			notWorkflows++
+			continue
+		}
 		out = append(out, checked{
 			path:     src.path,
 			findings: rules.NewEngine().Run(file),
@@ -124,7 +155,7 @@ func runAll(found collection) ([]checked, []unreadable) {
 		})
 	}
 
-	return out, bad
+	return out, bad, notWorkflows
 }
 
 // report writes the whole result: a summary, then what could not be checked,
@@ -170,7 +201,20 @@ func report(w io.Writer, scanned []checked, bad []unreadable, found collection, 
 
 	if len(scanned) == 0 {
 		if len(bad) == 0 {
-			fmt.Fprintln(w, "nothing to check.")
+			// Nothing was found and nothing failed, which means the scan looked
+			// at nothing at all.
+			//
+			// The wording is the important part. "nothing to check" reads like a
+			// clean bill of health, and it is the opposite of one: the scan did
+			// not find the workflows it was pointed at, so it says nothing about
+			// whether they are safe. The message names that, and the exit code
+			// says the same thing, so a CI step that only reads the code and a
+			// person reading the output get the same news.
+			fmt.Fprintln(w, "no workflows found, so nothing was checked.")
+			fmt.Fprintln(w)
+			fmt.Fprintln(w, "A directory scan looks for workflows in .github/workflows. If this")
+			fmt.Fprintln(w, "repository has workflows somewhere else, point the scan at them")
+			fmt.Fprintln(w, "directly, or pipe one in on standard input.")
 		}
 		return
 	}

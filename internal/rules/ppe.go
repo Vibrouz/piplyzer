@@ -1393,6 +1393,36 @@ func rule11For(file *parse.File, job parse.Job) (findings.Finding, bool) {
 		), true
 	}
 
+	// A job that uses the workflow token with nothing declaring its scope.
+	//
+	// The workflow token is available in every job, so using it does not make a
+	// job sensitive. What it does mean is that the job is using a credential
+	// whose scope nothing here can see, because no permissions: block declares
+	// it and the repository default is read-write on anything created before
+	// 2 Feb 2023.
+	//
+	// This is the case decision 23 said rule 11 should gain, and it is checked
+	// after the OIDC Block because that one is the more serious finding and
+	// should not be reported as a plain over-grant.
+	//
+	// It needs the job to actually use the token. A job that does not use it
+	// has nothing to be over-privileged about, and flagging every job in every
+	// repository that declares no permissions would be noise on a large share of
+	// real workflows.
+	if !hasBlock && jobUsesWorkflowToken(job) {
+		return findings.New(
+			Rule11ID,
+			findings.SeverityWarn,
+			rule11Message(
+				"it uses the workflow token and no permissions: block says what that token can do",
+				"the token's scope is the repository default, which is read-write for a repository or "+
+					"organisation created before 2 Feb 2023, and nothing here can see which case this is",
+				"add a permissions: block naming only the scopes this job needs",
+			),
+			jobLocation(file, job),
+		), true
+	}
+
 	// No permissions block anywhere: the job inherits the repository default,
 	// which is read-write for anything created before 2 Feb 2023. Only worth
 	// saying for a job that could do damage with it.

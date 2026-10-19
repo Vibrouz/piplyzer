@@ -86,6 +86,9 @@ usage:
 commands:
   scan      scan workflows and exit non-zero if anything blocks
 
+Running ppe with no command is an error rather than a scan of the current
+directory, so that a mistyped command line cannot be read as a clean result.
+
 flags:
       --no-color              never colour the output
       --version               print the version
@@ -100,7 +103,7 @@ arguments:
 exit codes:
   0  the scan finished and nothing blocks. Warn findings may still be printed.
   1  at least one Block finding. This is the merge gate.
-  2  the scan did not finish: the command line was wrong, or a workflow could not
-    be parsed and so was never checked. The result is not trustworthy either way.
+  2  the scan did not finish: the command line was wrong, a workflow could not
+     be parsed, or no workflow was found. The result is not trustworthy either way.
 `)
 }

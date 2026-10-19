@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -48,6 +49,19 @@ const scanDefaults = "."
 // selector, and a flag that accepts a single value is a flag whose only other
 // behaviour is to be typed wrong.
 func parseArgs(args []string) (command, error) {
+	// A bare "ppe" with no arguments is not one of the three forms the usage
+	// documents, and guessing that it means "scan the current directory" is
+	// how a mistyped command line turns into a clean result.
+	//
+	// The exit code matters more than the message here. Exit 0 means the scan
+	// finished and nothing blocks, and a CI step that runs "ppe" where it meant
+	// to run "ppe scan ." would read that as a clean repository. So this is an
+	// error, and it exits 2 like every other invocation that did not perform a
+	// scan.
+	if len(args) == 0 {
+		return command{}, errors.New("no command given. The only command is scan.")
+	}
+
 	cmd := command{kind: kindScan}
 	sawCommand := false
 

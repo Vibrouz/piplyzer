@@ -4,6 +4,32 @@
 # |---------------------------|-------------------|------------------------------------------|
 # | ppe-011/overgrant.yml     | 2 Warn            | the two ways a job is over-scoped        |
 # | ppe-011/oidc-forgery.yml  | 1 Block + 1 Warn  | the one Block case, and its two near misses |
+# | ppe-011/workflow_token.yml| 2 Warn            | the workflow token with no scope declared |
+#
+# ## The workflow token is a different question from a repository secret
+#
+# `workflow_token.yml` covers the case decisions.md section 23 said this rule
+# should gain. The workflow token is available in every job, so using it does
+# not make a job sensitive: the harm rules 8 and 11 target is a credential the
+# attacker would not otherwise have, and a stolen PAT is strictly more capable
+# than any GITHUB_TOKEN.
+#
+# The question here is different. The token's scope is whatever the effective
+# permissions say, and when nothing declares them the scope is the repository
+# default, which is read-write for a repository or organisation created before
+# 2 Feb 2023. The job is using a credential whose scope nothing here can see.
+#
+# Both spellings are covered, because GitHub documents `github.token` as
+# "functionally equivalent to the GITHUB_TOKEN secret". A rule that matched one
+# and not the other would be wrong about half the workflows that use a token,
+# and `TestWorkflowTokenIsNotCountedAsARealSecret` holds the two apart so they
+# cannot drift.
+#
+# The two negatives earn their place. A job that uses the token but declares
+# its permissions has nothing left to be over-privileged about, and a job that
+# does not use the token at all has nothing to be over-privileged about, and
+# flagging every job in every repository that declares no permissions would be
+# noise on a large share of real workflows.
 #
 # ## Almost everything here is Warn, on purpose
 #

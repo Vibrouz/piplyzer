@@ -95,6 +95,73 @@ const goldenNoticeOut = `scanned 1 workflow, 0 blocks, 0 warnings
 
 `
 
+// The report for a scan that found no workflow at all.
+//
+// This is a new output shape, and the wording is the point of it. It has to
+// read as a gap in the scan rather than as a repository with nothing wrong in
+// it, because a merge gate that cannot tell those apart passes on a mistyped
+// path.
+const goldenEmpty = `scanned 0 workflows, 0 blocks, 0 warnings
+
+no workflows found, so nothing was checked.
+
+A directory scan looks for workflows in .github/workflows. If this
+repository has workflows somewhere else, point the scan at them
+directly, or pipe one in on standard input.
+`
+
+// A scan that found no workflow, over a directory that holds none.
+//
+// The exit code is part of what is being pinned here. The message alone would
+// leave the gate passing.
+func TestScanGoldenEmptyResult(t *testing.T) {
+	dir := writeTree(t, map[string]string{"README.md": "docs"})
+
+	stdout, stderr, code := scanArgs(t, "", "scan", dir)
+
+	if stdout != goldenEmpty {
+		t.Errorf("output does not match:\n--- got ---\n%s\n--- want ---\n%s", stdout, goldenEmpty)
+	}
+	if code != exitIncomplete {
+		t.Errorf("exit = %d, want %d: a scan that looked at nothing is not a clean scan", code, exitIncomplete)
+	}
+	if stderr != "" {
+		t.Errorf("unexpected stderr:\n%s", stderr)
+	}
+}
+
+// The report for a scan where one of the files is not a workflow.
+//
+// The count says one workflow and the skip count says one file, which is the
+// point: a .yml file that is not a workflow is passed over and said so, not
+// counted as something the scan looked at.
+const goldenNotAWorkflow = `scanned 1 workflow, 0 blocks, 0 warnings, 1 other file not scanned
+
+`
+
+// A file that is valid YAML but is not a workflow is not counted as one.
+//
+// The extension is not enough to tell them apart, and counting a config file
+// as a scanned workflow says the scan looked at something it did not look at.
+func TestScanGoldenSkipsANonWorkflow(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		".github/workflows/ci.yml":     cleanWorkflow,
+		".github/workflows/config.yml": "key: value\nlist:\n  - a\n",
+	})
+
+	stdout, stderr, code := scanArgs(t, "", "scan", dir)
+
+	if stdout != goldenNotAWorkflow {
+		t.Errorf("output does not match:\n--- got ---\n%s\n--- want ---\n%s", stdout, goldenNotAWorkflow)
+	}
+	if code != exitOK {
+		t.Errorf("exit = %d, want %d: the real workflow was checked", code, exitOK)
+	}
+	if stderr != "" {
+		t.Errorf("unexpected stderr:\n%s", stderr)
+	}
+}
+
 // The whole report, exactly as it comes out.
 func TestScanGoldenOutput(t *testing.T) {
 	tests := []struct {
