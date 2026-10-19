@@ -54,6 +54,21 @@ func runWith(cmd command, stdin io.Reader, stdout, stderr io.Writer, c colour) i
 	if len(unchecked) > 0 {
 		return exitIncomplete
 	}
+	// Finding no workflows at all is also an incomplete scan.
+	//
+	// This is the difference between "I looked and there is nothing wrong" and
+	// "I looked at nothing". A gate that reports the second as the first is a
+	// gate that passes on a mistyped path, on a repository whose workflows live
+	// somewhere else, or on a checkout that did not include them. Every one of
+	// those is a false clean, and a false clean in a merge gate is worse than a
+	// false alarm, because nobody looks at a gate that says the repository is
+	// fine.
+	//
+	// The remedy is the same as for a parse error: run the scan again against
+	// the right path. The difference is only in what went wrong.
+	if len(scanned) == 0 {
+		return exitIncomplete
+	}
 	return exitOK
 }
 
@@ -170,7 +185,20 @@ func report(w io.Writer, scanned []checked, bad []unreadable, found collection, 
 
 	if len(scanned) == 0 {
 		if len(bad) == 0 {
-			fmt.Fprintln(w, "nothing to check.")
+			// Nothing was found and nothing failed, which means the scan looked
+			// at nothing at all.
+			//
+			// The wording is the important part. "nothing to check" reads like a
+			// clean bill of health, and it is the opposite of one: the scan did
+			// not find the workflows it was pointed at, so it says nothing about
+			// whether they are safe. The message names that, and the exit code
+			// says the same thing, so a CI step that only reads the code and a
+			// person reading the output get the same news.
+			fmt.Fprintln(w, "no workflows found, so nothing was checked.")
+			fmt.Fprintln(w)
+			fmt.Fprintln(w, "A directory scan looks for workflows in .github/workflows. If this")
+			fmt.Fprintln(w, "repository has workflows somewhere else, point the scan at them")
+			fmt.Fprintln(w, "directly, or pipe one in on standard input.")
 		}
 		return
 	}

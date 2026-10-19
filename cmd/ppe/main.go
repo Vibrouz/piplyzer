@@ -100,7 +100,7 @@ arguments:
 exit codes:
   0  the scan finished and nothing blocks. Warn findings may still be printed.
   1  at least one Block finding. This is the merge gate.
-  2  the scan did not finish: the command line was wrong, or a workflow could not
-    be parsed and so was never checked. The result is not trustworthy either way.
+  2  the scan did not finish: the command line was wrong, a workflow could not
+     be parsed, or no workflow was found. The result is not trustworthy either way.
 `)
 }

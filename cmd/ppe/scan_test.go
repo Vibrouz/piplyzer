@@ -220,14 +220,64 @@ func TestScanReportsSkippedCount(t *testing.T) {
 	}
 }
 
-// A scan that found nothing at all says so plainly rather than printing a
-// summary and an empty list.
+// A scan that found no workflow at all says so, and says it is not a clean
+// result.
+//
+// The message matters more than it looks. The old wording was "nothing to
+// check", which reads like a repository with nothing wrong in it, and the exit
+// code was 0, which is exactly what a merge gate reads as approval. Pointing
+// the scan at a directory with no workflows in it is the most ordinary mistake
+// there is, and it has to be distinguishable from a repository that is clean.
 func TestScanEmptyDirectory(t *testing.T) {
 	dir := writeTree(t, map[string]string{"README.md": "docs"})
 
-	stdout, _, _ := scanArgs(t, "", "scan", dir)
-	if !strings.Contains(stdout, "nothing to check") {
+	stdout, _, code := scanArgs(t, "", "scan", dir)
+
+	if !strings.Contains(stdout, "no workflows found") {
 		t.Errorf("missing the empty result message:\n%s", stdout)
+	}
+	// It must not read like a clean bill of health.
+	if strings.Contains(stdout, "nothing to check") {
+		t.Errorf("the message reads like a clean result:\n%s", stdout)
+	}
+	if code != exitIncomplete {
+		t.Errorf("exit = %d, want %d: a scan that looked at nothing is not a clean scan", code, exitIncomplete)
+	}
+}
+
+// The same holds for a directory that exists and holds an empty workflow
+// directory, which is a different mistake from the one above and produces the
+// same false clean.
+func TestScanEmptyWorkflowDirectory(t *testing.T) {
+	dir := writeTree(t, map[string]string{".github/workflows/README.md": "docs"})
+
+	stdout, _, code := scanArgs(t, "", "scan", dir)
+
+	if !strings.Contains(stdout, "no workflows found") {
+		t.Errorf("missing the empty result message:\n%s", stdout)
+	}
+	if code != exitIncomplete {
+		t.Errorf("exit = %d, want %d: a scan that looked at nothing is not a clean scan", code, exitIncomplete)
+	}
+}
+
+// A workflow that was found and is clean is a clean scan, and still exits 0.
+//
+// This is the case the fix above must not break. The distinction is between
+// finding nothing and finding nothing wrong.
+func TestScanCleanWorkflowStillExitsZero(t *testing.T) {
+	dir := writeTree(t, map[string]string{".github/workflows/ci.yml": cleanWorkflow})
+
+	stdout, _, code := scanArgs(t, "", "scan", dir)
+
+	if !strings.Contains(stdout, "scanned 1 workflow, 0 blocks, 0 warnings") {
+		t.Errorf("the summary is wrong:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "no workflows found") {
+		t.Errorf("a workflow was found, so this is not an empty scan:\n%s", stdout)
+	}
+	if code != exitOK {
+		t.Errorf("exit = %d, want %d: a clean scan is a clean scan", code, exitOK)
 	}
 }
 
@@ -247,12 +297,28 @@ func TestScanMissingPath(t *testing.T) {
 func TestExitCodes(t *testing.T) {
 	broken := "on:\n  push:\njobs:\n  j:\n   bad indent here\n"
 
+	// The directory cases need a path rather than standard input, so the table
+	// carries one or the other.
+	//
+	// The earlier version of this table always scanned standard input, which
+	// meant the "a bad path" case was passing because standard input was empty
+	// rather than because the path was bad. Two different mistakes, one exit
+	// code, so the test was green for the wrong reason and would have stayed
+	// green if the path handling broke.
+	emptyDir := writeTree(t, map[string]string{"README.md": "docs"})
+
 	tests := []struct {
-		name     string
-		stdin    string
-		want     int
-		reason   string
-		wantCode bool
+		name string
+		// stdin is the workflow to read from standard input. The directory
+		// cases use dir instead.
+		stdin string
+		dir   string
+		// wantIn is a string the output has to contain, and where it has to
+		// appear. It is what tells two cases that share an exit code apart.
+		wantIn    string
+		wantOnErr bool
+		want      int
+		reason    string
 	}{
 		{
 			name:   "clean workflow exits 0",
@@ -279,17 +345,47 @@ func TestExitCodes(t *testing.T) {
 			reason: "the scan did not finish, so its result is not trustworthy",
 		},
 		{
-			name:   "a bad path exits 2",
+			// The message matters here, not just the code. A bad path and an
+			// empty scan both exit 2, and they are different problems with
+			// different remedies, so the output has to say which one it was.
+			name:      "a bad path exits 2",
+			dir:       "no-such-directory",
+			wantIn:    "no-such-directory",
+			wantOnErr: true,
+			want:      exitIncomplete,
+			reason:    "the invocation was wrong",
+		},
+		{
+			// A scan that found no workflow did not check anything, so its
+			// result says nothing about the repository.
+			name:   "no workflows found exits 2",
+			dir:    emptyDir,
+			wantIn: "no workflows found",
 			want:   exitIncomplete,
-			reason: "the invocation was wrong",
+			reason: "a false clean in a merge gate is worse than a false alarm",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, code := scanArgs(t, tt.stdin, "scan", "-")
+			var stdout, stderr string
+			var code int
+			if tt.dir != "" {
+				stdout, stderr, code = scanArgs(t, "", "scan", tt.dir)
+			} else {
+				stdout, stderr, code = scanArgs(t, tt.stdin, "scan", "-")
+			}
 			if code != tt.want {
 				t.Errorf("exit = %d, want %d (%s)", code, tt.want, tt.reason)
+			}
+			if tt.wantIn == "" {
+				return
+			}
+			// The message may be on stdout or on stderr, so both are searched.
+			// The two failure modes print to different places and a test that
+			// insisted on one would be asserting on a formatting choice.
+			if !strings.Contains(stdout, tt.wantIn) && !strings.Contains(stderr, tt.wantIn) {
+				t.Errorf("the output does not mention %q:\nstdout:\n%s\nstderr:\n%s", tt.wantIn, stdout, stderr)
 			}
 		})
 	}
