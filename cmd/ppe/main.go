@@ -67,6 +67,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return exitOK
 	case kindScan:
 		return scan(cmd, stdin, stdout, stderr)
+	case kindDeps:
+		return depsCommand(cmd, stdout, stderr)
 	}
 
 	// parseArgs only returns the kinds above, so reaching here means the parser
@@ -76,21 +78,27 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprint(w, `ppe scans GitHub Actions workflows for supply chain attack patterns.
+	fmt.Fprint(w, `ppe scans GitHub Actions workflows for supply chain attack patterns,
+and the npm dependencies they pull in.
 
 usage:
   ppe scan [flags] [path...]
+  ppe deps [flags] [path...]
   ppe --help
   ppe --version
 
 commands:
   scan      scan workflows and exit non-zero if anything blocks
+  deps      check the npm lockfile and exit non-zero if anything blocks
 
 Running ppe with no command is an error rather than a scan of the current
 directory, so that a mistyped command line cannot be read as a clean result.
 
 flags:
       --no-color              never colour the output
+      --no-diff               deps only: skip the checks that need a base commit
+      --registry <url>        deps only: the registry this project is configured
+                               to use, instead of discovering it
       --version               print the version
   -h, --help                  print this help
 
@@ -100,10 +108,14 @@ arguments:
           from standard input, which is how this runs against a workflow that
           has not been written to disk yet.
 
+  For deps, the path is the repository to check, and it needs a
+  package-lock.json in it.
+
 exit codes:
-  0  the scan finished and nothing blocks. Warn findings may still be printed.
+  0  the check finished and nothing blocks. Warn findings may still be printed.
   1  at least one Block finding. This is the merge gate.
-  2  the scan did not finish: the command line was wrong, a workflow could not
-     be parsed, or no workflow was found. The result is not trustworthy either way.
+  2  the check did not finish: the command line was wrong, a file could not
+     be read, or nothing was found to check. The result is not trustworthy
+     either way.
 `)
 }
