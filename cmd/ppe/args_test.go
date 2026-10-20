@@ -236,7 +236,7 @@ func TestRunDispatch(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			got := run(tt.args, strings.NewReader(""), &stdout, &stderr)
+			got := run(tt.args, strings.NewReader(""), &stdout, &stderr, testEnv(t))
 			if got != tt.wantExit {
 				t.Errorf("exit = %d, want %d", got, tt.wantExit)
 			}
@@ -254,7 +254,7 @@ func TestRunDispatch(t *testing.T) {
 // not have an error line in it.
 func TestRunHelpGoesToStdout(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"--help"}, strings.NewReader(""), &stdout, &stderr); code != exitOK {
+	if code := run([]string{"--help"}, strings.NewReader(""), &stdout, &stderr, testEnv(t)); code != exitOK {
 		t.Fatalf("exit = %d, want %d", code, exitOK)
 	}
 	if !strings.Contains(stdout.String(), "usage:") {

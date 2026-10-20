@@ -30,10 +30,19 @@ jobs:
 `
 
 // scanArgs runs the whole command and returns what it wrote plus the exit code.
+//
+// The environment is the test environment, so the result does not depend on
+// what the machine running the test has set.
 func scanArgs(t *testing.T, stdin string, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
+	return scanArgsEnv(t, testEnv(t), stdin, args...)
+}
+
+// scanArgsEnv runs the whole command with a given environment.
+func scanArgsEnv(t *testing.T, env func(string) string, stdin string, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
 	var out, errBuf bytes.Buffer
-	code = run(args, strings.NewReader(stdin), &out, &errBuf)
+	code = run(args, strings.NewReader(stdin), &out, &errBuf, env)
 	return out.String(), errBuf.String(), code
 }
 

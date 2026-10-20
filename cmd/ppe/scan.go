@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strings"
 
@@ -44,19 +43,19 @@ func currentRepository(env func(string) string) parse.Repository {
 // not have to know how the decision was reached. That split is what lets a test
 // render the coloured report: the decision depends on whether stdout is a
 // terminal, and a test's stdout is not one.
-func scan(cmd command, stdin io.Reader, stdout, stderr io.Writer) int {
-	return runWith(cmd, stdin, stdout, stderr, palette(cmd))
+func scan(cmd command, stdin io.Reader, stdout, stderr io.Writer, env func(string) string) int {
+	return runWith(cmd, stdin, stdout, stderr, palette(cmd, env), env)
 }
 
 // runWith is scan, with the colour decided in advance.
-func runWith(cmd command, stdin io.Reader, stdout, stderr io.Writer, c colour) int {
+func runWith(cmd command, stdin io.Reader, stdout, stderr io.Writer, c colour, env func(string) string) int {
 	found, err := collect(cmd, stdin)
 	if err != nil {
 		fmt.Fprintf(stderr, "usage: %v\n", err)
 		return exitIncomplete
 	}
 
-	scanned, unchecked, notWorkflows := runAll(found, currentRepository(os.Getenv))
+	scanned, unchecked, notWorkflows := runAll(found, currentRepository(env))
 
 	// Files that parsed but are not workflows are counted as skipped, the same
 	// as files that never had a workflow extension. The count is the one in the

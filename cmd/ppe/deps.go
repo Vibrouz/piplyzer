@@ -28,7 +28,7 @@ const lockfileName = "package-lock.json"
 // The exit codes are the same as the scan's, for the same reason. Zero means
 // the check finished and nothing blocks. One means something blocks. Two means
 // the check did not finish, and its result says nothing either way.
-func depsCommand(cmd command, stdout, stderr io.Writer) int {
+func depsCommand(cmd command, stdout, stderr io.Writer, env func(string) string) int {
 	dir := "."
 	if len(cmd.paths) > 0 {
 		dir = cmd.paths[0]
@@ -40,7 +40,7 @@ func depsCommand(cmd command, stdout, stderr io.Writer) int {
 		return exitIncomplete
 	}
 
-	registry := discoverRegistry(cmd, dir)
+	registry := discoverRegistry(cmd, dir, env)
 
 	var found findings.Findings
 
@@ -53,7 +53,7 @@ func depsCommand(cmd command, stdout, stderr io.Writer) int {
 
 	// The checks that compare against the base commit.
 	if !cmd.noDiff {
-		base, reason := baseLockfile(cmd, dir)
+		base, reason := baseLockfile(cmd, dir, env)
 		switch {
 		case base != nil:
 			found = append(found, deps.Diff(base, lock, lockfilePath(dir))...)
@@ -102,8 +102,8 @@ func lockfilePath(dir string) string {
 // The search is a plain text search rather than a parse, because the workflow
 // is not the thing being checked and a malformed one should not stop the
 // dependency checks.
-func discoverRegistry(cmd command, dir string) deps.Registry {
-	registry, _ := deps.DiscoverRegistry(cmd.registry, dir, os.Getenv, findRegistryURL(dir))
+func discoverRegistry(cmd command, dir string, env func(string) string) deps.Registry {
+	registry, _ := deps.DiscoverRegistry(cmd.registry, dir, env, findRegistryURL(dir))
 	return registry
 }
 
@@ -170,8 +170,8 @@ func registryURLIn(workflow string) string {
 // Every failure is a skip with a reason, and never an error, because a
 // dependency check that cannot find a base commit has not found anything
 // wrong. It has failed to look, and the difference has to be visible.
-func baseLockfile(cmd command, dir string) (*lockfile.Lockfile, string) {
-	eventPath := os.Getenv("GITHUB_EVENT_PATH")
+func baseLockfile(cmd command, dir string, env func(string) string) (*lockfile.Lockfile, string) {
+	eventPath := env("GITHUB_EVENT_PATH")
 	sha, ok := deps.BaseCommit(eventPath)
 	if !ok {
 		return nil, "no pull request base commit, so the checks that compare against it were skipped"
