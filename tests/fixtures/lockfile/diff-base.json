@@ -1,0 +1,34 @@
+{
+  "name": "base",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "base",
+      "version": "1.0.0",
+      "license": "ISC"
+    },
+    "node_modules/existing": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/existing/-/existing-1.0.0.tgz",
+      "integrity": "sha512-existing"
+    },
+    "node_modules/upgraded": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/upgraded/-/upgraded-1.0.0.tgz",
+      "integrity": "sha512-upgraded"
+    },
+    "node_modules/gained-a-script": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/gained-a-script/-/gained-a-script-1.0.0.tgz",
+      "integrity": "sha512-gained"
+    },
+    "node_modules/always-had-a-script": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/always-had-a-script/-/always-had-a-script-1.0.0.tgz",
+      "integrity": "sha512-always",
+      "hasInstallScript": true
+    }
+  }
+}

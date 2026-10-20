@@ -1,0 +1,46 @@
+{
+  "name": "head",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "head",
+      "version": "1.0.0",
+      "license": "ISC"
+    },
+    "node_modules/existing": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/existing/-/existing-1.0.0.tgz",
+      "integrity": "sha512-existing"
+    },
+    "node_modules/upgraded": {
+      "version": "2.0.0",
+      "resolved": "https://registry.npmjs.org/upgraded/-/upgraded-2.0.0.tgz",
+      "integrity": "sha512-upgraded2"
+    },
+    "node_modules/gained-a-script": {
+      "version": "2.0.0",
+      "resolved": "https://registry.npmjs.org/gained-a-script/-/gained-a-script-2.0.0.tgz",
+      "integrity": "sha512-gained2",
+      "hasInstallScript": true
+    },
+    "node_modules/always-had-a-script": {
+      "version": "2.0.0",
+      "resolved": "https://registry.npmjs.org/always-had-a-script/-/always-had-a-script-2.0.0.tgz",
+      "integrity": "sha512-always2",
+      "hasInstallScript": true
+    },
+    "node_modules/brand-new": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/brand-new/-/brand-new-1.0.0.tgz",
+      "integrity": "sha512-brandnew"
+    },
+    "node_modules/brand-new-with-a-script": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/brand-new-with-a-script/-/brand-new-with-a-script-1.0.0.tgz",
+      "integrity": "sha512-brandnewscript",
+      "hasInstallScript": true
+    }
+  }
+}

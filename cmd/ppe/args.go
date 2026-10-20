@@ -11,6 +11,7 @@ type commandKind int
 
 const (
 	kindScan commandKind = iota
+	kindDeps
 	kindHelp
 	kindVersion
 )
@@ -32,6 +33,14 @@ type command struct {
 	// stdin is true when a path of "-" appeared, meaning read one workflow from
 	// standard input.
 	stdin bool
+
+	// registry is the registry the project is configured to use, from the
+	// --registry flag. An empty string means none was given, and the registry
+	// is discovered from the .npmrc, the environment, and the workflow instead.
+	registry string
+	// noDiff is set by --no-diff, which skips the checks that need a base
+	// commit and runs only the ones that do not.
+	noDiff bool
 }
 
 // scanDefaults is the current directory, spelled as "." rather than resolved, so
@@ -59,7 +68,7 @@ func parseArgs(args []string) (command, error) {
 	// error, and it exits 2 like every other invocation that did not perform a
 	// scan.
 	if len(args) == 0 {
-		return command{}, errors.New("no command given. The only command is scan.")
+		return command{}, errors.New("no command given. The commands are scan and deps.")
 	}
 
 	cmd := command{kind: kindScan}
@@ -79,6 +88,9 @@ func parseArgs(args []string) (command, error) {
 				switch arg {
 				case "scan":
 					sawCommand = true
+				case "deps":
+					cmd.kind = kindDeps
+					sawCommand = true
 				case "help":
 					cmd.kind = kindHelp
 					return cmd, nil
@@ -86,7 +98,7 @@ func parseArgs(args []string) (command, error) {
 					cmd.kind = kindVersion
 					return cmd, nil
 				default:
-					return cmd, fmt.Errorf("unknown command %q. The only command is scan.", arg)
+					return cmd, fmt.Errorf("unknown command %q. The commands are scan and deps.", arg)
 				}
 				continue
 			}
@@ -95,7 +107,7 @@ func parseArgs(args []string) (command, error) {
 		}
 
 		// Split --flag=value once so both spellings work from here on.
-		name, _, _ := strings.Cut(arg, "=")
+		name, value, hasValue := strings.Cut(arg, "=")
 
 		switch name {
 		case "-h", "--help":
@@ -106,6 +118,19 @@ func parseArgs(args []string) (command, error) {
 			return cmd, nil
 		case "--no-color":
 			cmd.noColor = true
+		case "--no-diff":
+			cmd.noDiff = true
+		case "--registry":
+			// The registry takes a value, and it is the one flag that does, so
+			// the value may be in this token or in the next one.
+			if !hasValue {
+				if i+1 >= len(args) {
+					return cmd, errors.New("--registry needs a value")
+				}
+				i++
+				value = args[i]
+			}
+			cmd.registry = value
 		default:
 			return cmd, fmt.Errorf("unknown flag %q", name)
 		}
