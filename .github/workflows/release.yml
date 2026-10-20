@@ -28,9 +28,18 @@ jobs:
           # what makes them unable to drift: a tag that does not match the
           # action would publish a release the action does not know how to
           # fetch, and the failure would be at somebody else's install.
-          version=$(grep -E '^[[:space:]]*default:[[:space:]]*v' action.yml | head -1 | awk '{print $2}')
+          #
+          # The version is read from the version input specifically rather
+          # than from the first default that looks like a version, so that
+          # another input cannot break this by having a default that happens
+          # to start with a v.
+          version=$(awk '
+            /^  version:/ { in_version = 1; next }
+            in_version && /^    default:/ { print $2; exit }
+            in_version && /^  [a-z_]+:/ { in_version = 0 }
+          ' action.yml)
           if [ -z "$version" ]; then
-            echo "::error::no version found in action.yml" >&2
+            echo "::error::no version found in the version input of action.yml" >&2
             exit 1
           fi
           if [ "${GITHUB_REF_NAME}" != "$version" ]; then
