@@ -1,0 +1,59 @@
+name: CI
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# The workflow token only reads the repository. Nothing here writes to it, and
+# the release workflow has its own job with write access.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.24'
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Check formatting
+        run: |
+          set -euo pipefail
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files are not gofmt clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+  scan:
+    name: ppe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.24'
+
+      # Built from source rather than taken from the action, because the action
+      # downloads a release and there is no release yet. Once v0.1.0 is cut this
+      # can be the action instead, which is the point of shipping one.
+      - name: Build
+        run: go build -o ppe ./cmd/ppe
+
+      # The tool on its own workflows. It is the same check every user of the
+      # action gets, run against the repository that ships it.
+      - name: Scan
+        run: ./ppe scan .
