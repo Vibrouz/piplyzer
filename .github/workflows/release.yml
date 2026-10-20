@@ -1,0 +1,70 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+
+# The release is created with the workflow token, which is the only credential a
+# release needs. It can write to this repository and nothing else.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.24'
+
+      - name: Check the tag matches the action
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The action's default version is the one it downloads, so the tag
+          # and the version have to be the same release. Checking it here is
+          # what makes them unable to drift: a tag that does not match the
+          # action would publish a release the action does not know how to
+          # fetch, and the failure would be at somebody else's install.
+          version=$(grep -E '^[[:space:]]*default:[[:space:]]*v' action.yml | head -1 | awk '{print $2}')
+          if [ -z "$version" ]; then
+            echo "::error::no version found in action.yml" >&2
+            exit 1
+          fi
+          if [ "${GITHUB_REF_NAME}" != "$version" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match the action's version ${version}" >&2
+            echo "::error::update the default in action.yml and commit it before tagging" >&2
+            exit 1
+          fi
+          echo "ppe: releasing ${version}"
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          # CGO off so the binary is static, and the version stamped in so
+          # "ppe --version" says which release it is.
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch \
+              go build -trimpath \
+                -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+                -o "ppe-linux-${arch}" ./cmd/ppe
+          done
+          ls -l ppe-linux-*
+
+      - name: Publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # --verify-tag because the tag has to already exist. Without it gh
+          # would create one from the default branch, which would publish a
+          # release whose tag points at code that was never tagged.
+          gh release create "${GITHUB_REF_NAME}" \
+            --verify-tag \
+            --title "${GITHUB_REF_NAME}" \
+            --notes "ppe ${GITHUB_REF_NAME}." \
+            ppe-linux-amd64 ppe-linux-arm64
