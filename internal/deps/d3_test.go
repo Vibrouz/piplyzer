@@ -237,6 +237,103 @@ func TestD3DowngradesWhenNoRegistryWasFound(t *testing.T) {
 	}
 }
 
+// The source of the registry is recorded, so that a finding can say where the
+// registry it compared against came from.
+//
+// The sources are not equivalent and a reader cannot tell them apart from the
+// finding. The environment variable silently outranks the repository's own
+// .npmrc, so a project whose .npmrc says one registry and whose CI sets
+// another is checked against the CI one, with nothing in the output to say so.
+func TestDiscoverRegistryRecordsItsSource(t *testing.T) {
+	env := func(m map[string]string) func(string) string {
+		return func(k string) string { return m[k] }
+	}
+
+	tests := []struct {
+		name  string
+		npmrc string
+		flag  string
+		env   map[string]string
+		wf    string
+		want  string
+	}{
+		{
+			name: "the flag",
+			flag: "https://from-flag.example/",
+			want: "--registry flag",
+		},
+		{
+			name:  "the npmrc",
+			npmrc: "registry=https://from-npmrc.example/\n",
+			want:  ".npmrc in the repository",
+		},
+		{
+			name: "the environment",
+			env:  map[string]string{"NPM_CONFIG_REGISTRY": "https://from-env.example/"},
+			want: "NPM_CONFIG_REGISTRY",
+		},
+		{
+			name: "the workflow",
+			wf:   "https://from-workflow.example/",
+			want: "setup-node",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// A directory of its own for each case, because the sources are
+			// tried in order and an .npmrc left over from another case would
+			// win over the one under test.
+			dir := t.TempDir()
+			if tt.npmrc != "" {
+				if err := os.WriteFile(filepath.Join(dir, ".npmrc"), []byte(tt.npmrc), 0o644); err != nil {
+					t.Fatalf("write npmrc: %v", err)
+				}
+			}
+
+			got, found := deps.DiscoverRegistry(tt.flag, dir, env(tt.env), tt.wf)
+			if !found {
+				t.Fatal("no registry was found")
+			}
+			if !strings.Contains(got.Source, tt.want) {
+				t.Errorf("Source = %q, want it to mention %q", got.Source, tt.want)
+			}
+		})
+	}
+}
+
+// A finding says where the registry it compared against came from.
+//
+// Without it, a project whose CI sets a registry that contradicts the
+// repository's own .npmrc gets a finding that gives no way to tell which
+// registry was used.
+func TestD3MessageNamesTheRegistrySource(t *testing.T) {
+	body := `{"name":"p","version":"1.0.0","lockfileVersion":3,"packages":{
+		"": {"name":"p","version":"1.0.0"},
+		"node_modules/evil": {"version":"1.0.0","resolved":"https://evil.example.com/evil/-/evil-1.0.0.tgz","integrity":"sha512-x"}
+	}}`
+	file, err := lockfile.Parse([]byte(body))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	registry, found := deps.DiscoverRegistry("https://npm.pkg.github.com/", "", func(string) string { return "" }, "")
+	if !found {
+		t.Fatal("no registry was found")
+	}
+
+	got := deps.D3(file, registry, "package-lock.json")
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(got), got)
+	}
+	if !strings.Contains(got[0].Message, "--registry flag") {
+		t.Errorf("the message does not name the source: %s", got[0].Message)
+	}
+	if !strings.Contains(got[0].Message, "npm.pkg.github.com") {
+		t.Errorf("the message does not name the registry: %s", got[0].Message)
+	}
+}
+
 // The registry is discovered from the four sources, in the order the plan sets
 // out, and the first one that has something wins.
 func TestDiscoverRegistryOrder(t *testing.T) {
@@ -361,6 +458,13 @@ func TestRegistryFromNpmrc(t *testing.T) {
 			}
 			if !found {
 				return
+			}
+			// The Found field is what the check uses to decide whether a
+			// finding is a Block or a Warn, so it has to agree with the return
+			// value. The .npmrc path once left it unset, which made every
+			// project that had configured a registry read as one that had not.
+			if !got.Found {
+				t.Error("Found = false for a registry that was found")
 			}
 			if tt.want != "" {
 				if got.Default == nil {

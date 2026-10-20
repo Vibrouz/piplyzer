@@ -46,11 +46,20 @@ const (
 )
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr, os.Getenv))
 }
 
 // run is main, with its inputs as parameters.
-func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+//
+// The environment is a parameter rather than something read from the process,
+// for the same reason the streams are: a test that reads the ambient
+// environment tests whatever the machine running it happens to have set. A CI run
+// has GITHUB_REPOSITORY and usually has an npm registry configured, and a
+// golden file written against a laptop is then wrong on the runner.
+//
+// The lookup is passed the same way everywhere, so a caller can hand in a fixed
+// map and get the same result every time.
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer, env func(string) string) int {
 	cmd, err := parseArgs(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "ppe: %v\n\n", err)
@@ -66,9 +75,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "ppe %s\n", version)
 		return exitOK
 	case kindScan:
-		return scan(cmd, stdin, stdout, stderr)
+		return scan(cmd, stdin, stdout, stderr, env)
 	case kindDeps:
-		return depsCommand(cmd, stdout, stderr)
+		return depsCommand(cmd, stdout, stderr, env)
 	}
 
 	// parseArgs only returns the kinds above, so reaching here means the parser

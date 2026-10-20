@@ -32,10 +32,21 @@ func lockfileFixture(t *testing.T, name string) string {
 }
 
 // depsArgs runs the whole command and returns what it wrote plus the exit code.
+//
+// The environment is the test environment, so the result does not depend on
+// what the machine running the test has set. A CI runner usually has an npm
+// registry configured, and that would change which registry the checks compare
+// against.
 func depsArgs(t *testing.T, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
+	return depsArgsEnv(t, testEnv(t), args...)
+}
+
+// depsArgsEnv runs the whole command with a given environment.
+func depsArgsEnv(t *testing.T, env func(string) string, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
 	var out, errBuf bytes.Buffer
-	code = run(args, strings.NewReader(""), &out, &errBuf)
+	code = run(args, strings.NewReader(""), &out, &errBuf, env)
 	return out.String(), errBuf.String(), code
 }
 
@@ -201,7 +212,7 @@ func TestDepsRunsTheDiffAgainstTheBaseCommit(t *testing.T) {
 	if err := os.WriteFile(event, []byte(payload), 0o644); err != nil {
 		t.Fatalf("write event: %v", err)
 	}
-	t.Setenv("GITHUB_EVENT_PATH", event)
+	env := withEnv(map[string]string{"GITHUB_EVENT_PATH": event})
 
 	// The head lockfile, in the working tree.
 	head := lockfileFixture(t, "diff-head.json")
@@ -209,7 +220,7 @@ func TestDepsRunsTheDiffAgainstTheBaseCommit(t *testing.T) {
 		t.Fatalf("write lockfile: %v", err)
 	}
 
-	stdout, stderr, code := depsArgs(t, "deps", dir)
+	stdout, stderr, code := depsArgsEnv(t, env, "deps", dir)
 
 	if code != exitBlocked {
 		t.Errorf("exit = %d, want %d\nstdout:\n%s\nstderr:\n%s", code, exitBlocked, stdout, stderr)
@@ -321,9 +332,9 @@ func TestDepsSaysWhyTheBaseCommitWasSkipped(t *testing.T) {
 	if err := os.WriteFile(event, []byte(payload), 0o644); err != nil {
 		t.Fatalf("write event: %v", err)
 	}
-	t.Setenv("GITHUB_EVENT_PATH", event)
+	env := withEnv(map[string]string{"GITHUB_EVENT_PATH": event})
 
-	_, stderr, _ := depsArgs(t, "deps", dir)
+	_, stderr, _ := depsArgsEnv(t, env, "deps", dir)
 
 	if !strings.Contains(stderr, "fetch") {
 		t.Errorf("the reason the fetch failed is not said: %s", stderr)
@@ -385,14 +396,14 @@ func TestDepsSaysWhenTheBaseCommitHasNoLockfile(t *testing.T) {
 	if err := os.WriteFile(event, []byte(payload), 0o644); err != nil {
 		t.Fatalf("write event: %v", err)
 	}
-	t.Setenv("GITHUB_EVENT_PATH", event)
+	env := withEnv(map[string]string{"GITHUB_EVENT_PATH": event})
 
 	// The working tree has a lockfile, the base commit does not.
 	if err := os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte(lockfileFixture(t, "diff-head.json")), 0o644); err != nil {
 		t.Fatalf("write lockfile: %v", err)
 	}
 
-	_, stderr, _ := depsArgs(t, "deps", dir)
+	_, stderr, _ := depsArgsEnv(t, env, "deps", dir)
 
 	if !strings.Contains(stderr, "no package-lock.json") {
 		t.Errorf("the reason is not said: %s", stderr)

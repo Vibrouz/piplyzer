@@ -118,8 +118,8 @@ func (c colour) ruleID(id string) string {
 }
 
 // palette is the colour decision for one run.
-func palette(cmd command) colour {
-	return colour{on: useColour(cmd.noColor, os.Getenv, stdoutIsTerminal())}
+func palette(cmd command, env func(string) string) colour {
+	return colour{on: useColour(cmd.noColor, env, stdoutIsTerminal())}
 }
 
 // padTo pads a styled string to a visible width.

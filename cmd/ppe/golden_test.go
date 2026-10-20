@@ -334,7 +334,7 @@ func renderWithColour(t *testing.T, stdin string) string {
 	}
 
 	var out, errBuf bytes.Buffer
-	runWith(cmd, strings.NewReader(stdin), &out, &errBuf, colour{on: true})
+	runWith(cmd, strings.NewReader(stdin), &out, &errBuf, colour{on: true}, testEnv(t))
 	return out.String()
 }
 

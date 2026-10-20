@@ -60,9 +60,9 @@ func TestScanKnowsItsOwnRepository(t *testing.T) {
 			"      - uses: our-org/whoa/.github/workflows/inner.yml@main\n",
 	})
 
-	t.Setenv("GITHUB_REPOSITORY", "our-org/whoa")
+	env := withEnv(map[string]string{"GITHUB_REPOSITORY": "our-org/whoa"})
 
-	stdout, _, _ := scanArgs(t, "", "scan", dir)
+	stdout, _, _ := scanArgsEnv(t, env, "", "scan", dir)
 
 	if strings.Contains(stdout, "PPE-010") {
 		t.Errorf("a reference to this repository was reported:\n%s", stdout)
@@ -78,9 +78,9 @@ func TestScanStillReportsAnotherRepository(t *testing.T) {
 			"      - uses: other-org/their-action@0123456789abcdef0123456789abcdef01234567\n",
 	})
 
-	t.Setenv("GITHUB_REPOSITORY", "our-org/whoa")
+	env := withEnv(map[string]string{"GITHUB_REPOSITORY": "our-org/whoa"})
 
-	stdout, _, _ := scanArgs(t, "", "scan", dir)
+	stdout, _, _ := scanArgsEnv(t, env, "", "scan", dir)
 
 	if !strings.Contains(stdout, "PPE-010") {
 		t.Errorf("a reference to another repository was not reported:\n%s", stdout)
