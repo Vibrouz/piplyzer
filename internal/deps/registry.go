@@ -37,6 +37,7 @@ func DiscoverRegistry(explicit string, repoDir string, env func(string) string, 
 		if u, ok := parseRegistry(raw); ok {
 			registry.Default = u
 			registry.Found = true
+			registry.Source = "the --registry flag"
 			return registry, true
 		}
 		return Registry{}, false
@@ -52,6 +53,7 @@ func DiscoverRegistry(explicit string, repoDir string, env func(string) string, 
 		if u, ok := parseRegistry(raw); ok {
 			registry.Default = u
 			registry.Found = true
+			registry.Source = "the NPM_CONFIG_REGISTRY environment variable"
 			return registry, true
 		}
 		return Registry{}, false
@@ -61,11 +63,13 @@ func DiscoverRegistry(explicit string, repoDir string, env func(string) string, 
 		if u, ok := parseRegistry(raw); ok {
 			registry.Default = u
 			registry.Found = true
+			registry.Source = "the registry-url of a setup-node step in the workflow"
 			return registry, true
 		}
 		return Registry{}, false
 	}
 
+	registry.Source = "the default registry, since no configuration was found"
 	return registry, false
 }
 
@@ -91,8 +95,11 @@ func registryFromNpmrc(dir string) (Registry, bool) {
 	}
 	defer file.Close()
 
-	registry := Registry{Scopes: map[string]*url.URL{}}
+	registry := Registry{Scopes: map[string]*url.URL{}, ScopeSources: map[string]string{}}
 	found := false
+	// The source is tracked per kind, because a file can set both and the
+	// message names the one that applies to the package.
+	defaultSource := ""
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -126,6 +133,7 @@ func registryFromNpmrc(dir string) (Registry, bool) {
 				continue
 			}
 			registry.Scopes["@"+name] = u
+			registry.ScopeSources["@"+name] = "the " + name + " registry in the .npmrc in the repository"
 			found = true
 			continue
 		}
@@ -138,11 +146,29 @@ func registryFromNpmrc(dir string) (Registry, bool) {
 			continue
 		}
 		registry.Default = u
+		if defaultSource == "" {
+			defaultSource = "the .npmrc in the repository"
+		}
 		found = true
 	}
 
 	if !found {
 		return Registry{}, false
+	}
+	// Found is what tells the caller this is a real configuration rather than
+	// a guess, and it is what decides whether a finding is a Block or a Warn.
+	//
+	// It has to be set here as well as in the other discovery paths, because
+	// the .npmrc is where a project actually configures its registry. Leaving
+	// it unset made every .npmrc registry read as "no configuration found",
+	// which downgraded the finding to a Warn for exactly the projects that had
+	// configured a registry.
+	registry.Found = true
+	// The default registry is the one an unscoped package is compared against,
+	// so its source is the one that matters for most findings.
+	registry.Source = defaultSource
+	if registry.Source == "" {
+		registry.Source = "the default registry, since no configuration was found"
 	}
 	return registry, true
 }

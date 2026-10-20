@@ -57,6 +57,26 @@ type Registry struct {
 	// somewhere we did not read is using, and a finding that depends on that
 	// unknown is not a Block.
 	Found bool
+
+	// Source is where the registry configuration came from, in words a reader
+	// can act on: "the --registry flag", "the .npmrc in the repository", and so
+	// on.
+	//
+	// It is recorded because the sources are not equivalent and a reader cannot
+	// tell them apart from the finding. The environment variable silently
+	// outranks the repository's own .npmrc, so a project whose .npmrc says one
+	// registry and whose CI sets another is checked against the CI one, with
+	// nothing in the output to say so. Naming the source is what makes that
+	// visible.
+	Source string
+
+	// ScopeSources is the source for each scope's registry, in the same form as
+	// Source.
+	//
+	// It is a separate map because a repository can set a default registry and
+	// a scoped one, and the source that matters is the one for the registry
+	// the package is compared against.
+	ScopeSources map[string]string
 }
 
 // For returns the registry that serves a package.
@@ -70,6 +90,23 @@ func (r Registry) For(name string) *url.URL {
 		}
 	}
 	return r.Default
+}
+
+// SourceFor returns where the registry serving a package came from.
+//
+// The source is per registry rather than one string for the lot, because a
+// repository can set a default registry and a scoped one in the same file, and
+// the source that applies is the one for the registry the package is compared
+// against.
+func (r Registry) SourceFor(name string) string {
+	if scope := scopeOf(name); scope != "" {
+		if _, ok := r.Scopes[scope]; ok {
+			if src, ok := r.ScopeSources[scope]; ok {
+				return src
+			}
+		}
+	}
+	return r.Source
 }
 
 // scopeOf returns the scope of a package name, with its @, or the empty string
@@ -163,7 +200,7 @@ func D3(lock *lockfile.Lockfile, registry Registry, path string) findings.Findin
 		out = append(out, findings.New(
 			D3ID,
 			severity,
-			d3Message(p, host, serving),
+			d3Message(p, host, serving, registry.SourceFor(p.Name)),
 			findings.At(path, 0),
 		))
 	}
@@ -220,10 +257,13 @@ func sameHost(a, b string) bool {
 // It names the package and both hosts, because "this package came from
 // somewhere else" is not actionable and "lodash came from registry.npmjs.org
 // rather than npm.pkg.github.com" is.
-func d3Message(p lockfile.Package, from string, serving *url.URL) string {
+func d3Message(p lockfile.Package, from string, serving *url.URL, source string) string {
 	against := "the registry this project is configured to use"
 	if serving != nil {
 		against = serving.Host
+	}
+	if source != "" {
+		against += ", which came from " + source
 	}
 	return p.Name + " " + p.Version + " was resolved from " + from + ", which is not " + against + ". A " +
 		"package fetched from a registry you did not choose is a package you did not review: whoever published " +
