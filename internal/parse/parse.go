@@ -94,6 +94,26 @@ type Repository struct {
 	Name  string
 }
 
+// ParseRepository reads an "owner/name" repository string.
+//
+// It is the form GITHUB_REPOSITORY holds, and the form a workflow's own
+// repository takes in a uses: reference.
+//
+// A string that is not two non-empty parts is not a repository, and returns
+// false rather than a half-filled one. A repository with an empty owner would
+// make every rule that compares an owner treat everything as same-organisation.
+func ParseRepository(s string) (Repository, bool) {
+	owner, name, ok := strings.Cut(strings.TrimSpace(s), "/")
+	if !ok || owner == "" || name == "" {
+		return Repository{}, false
+	}
+	// A second slash means it is not an owner/name pair.
+	if strings.Contains(name, "/") {
+		return Repository{}, false
+	}
+	return Repository{Owner: owner, Name: name}, true
+}
+
 // String returns "owner/name", or the empty string when unknown.
 func (r Repository) String() string {
 	if r.Owner == "" && r.Name == "" {

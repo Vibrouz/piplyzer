@@ -1251,6 +1251,16 @@ func Rule10(file *parse.File) findings.Findings {
 		if isFirstParty(owner) {
 			continue
 		}
+		// A reference to this repository is not a hop at all.
+		//
+		// It is the code in this repository, which the reader is already
+		// looking at, and a workflow that calls its own reusable workflow is
+		// ordinary. Reporting it as unreadable third-party code is exactly
+		// backwards, and it is the shape every repository that adopts an
+		// action from its own organisation has in it.
+		if !file.Repository.IsZero() && strings.EqualFold(repo, file.Repository.String()) {
+			continue
+		}
 		out = append(out, findings.New(
 			Rule10ID,
 			findings.SeverityWarn,

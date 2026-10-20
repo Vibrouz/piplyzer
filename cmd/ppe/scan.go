@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 
@@ -10,6 +11,29 @@ import (
 	"github.com/Vibrouz/whoa/internal/parse"
 	"github.com/Vibrouz/whoa/internal/rules"
 )
+
+// currentRepository reads the repository the scan is running in, if it is known.
+//
+// GitHub sets GITHUB_REPOSITORY on every run, so this is filled in in CI and
+// empty for a scan of a bare directory.
+//
+// It matters for rule 10, which reports a reference to another repository as
+// code this tool cannot read. Without the owner, a workflow that uses this
+// repository's own action is reported as third-party code, which is exactly
+// backwards, and it is the shape every repository that adopts the action would
+// have in it.
+//
+// A value that is not an owner/name pair is ignored, and the repository stays
+// unknown. An unknown repository is the safe direction: the rule then says it
+// does not know the owner rather than claiming to know that a reference is
+// third party.
+func currentRepository(env func(string) string) parse.Repository {
+	repo, ok := parse.ParseRepository(env("GITHUB_REPOSITORY"))
+	if !ok {
+		return parse.Repository{}
+	}
+	return repo
+}
 
 // scan is the entry point for "ppe scan".
 //
@@ -32,7 +56,7 @@ func runWith(cmd command, stdin io.Reader, stdout, stderr io.Writer, c colour) i
 		return exitIncomplete
 	}
 
-	scanned, unchecked, notWorkflows := runAll(found)
+	scanned, unchecked, notWorkflows := runAll(found, currentRepository(os.Getenv))
 
 	// Files that parsed but are not workflows are counted as skipped, the same
 	// as files that never had a workflow extension. The count is the one in the
@@ -128,7 +152,7 @@ type unreadable struct {
 // is counted as skipped, the same as a file that never had a workflow
 // extension, because counting it as a scanned workflow says the scan looked at
 // something it did not look at.
-func runAll(found collection) ([]checked, []unreadable, int) {
+func runAll(found collection, repo parse.Repository) ([]checked, []unreadable, int) {
 	var out []checked
 	var bad []unreadable
 	notWorkflows := 0
@@ -139,7 +163,18 @@ func runAll(found collection) ([]checked, []unreadable, int) {
 		//
 		// The parse error is not wrapped again with the name: ParseFile already
 		// puts the path at the front of its message.
-		file, err := parse.ParseFile(src.name(), src.data)
+		//
+		// The repository is passed in when the caller knows it, so that rule 10
+		// can tell a reference to this repository from a reference to a third
+		// party one. It is zero for a scan of a bare directory, and the rule
+		// says so in its message rather than guessing.
+		var file *parse.File
+		var err error
+		if repo.IsZero() {
+			file, err = parse.ParseFile(src.name(), src.data)
+		} else {
+			file, err = parse.ParseWorkflow(src.name(), repo, src.data)
+		}
 		if err != nil {
 			bad = append(bad, unreadable{path: src.name(), err: err})
 			continue
