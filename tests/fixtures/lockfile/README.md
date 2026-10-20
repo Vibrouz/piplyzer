@@ -1,12 +1,15 @@
 # Fixtures for the lockfile reader.
 #
-# | Fixture                | What it is                                                  |
-# |------------------------|-------------------------------------------------------------|
-# | npm-v3.json            | a real lockfile written by npm install                      |
-# | npm-v2.json            | a real lockfile written by npm install with lockfileVersion 2 |
-# | v3.json                | hand-built, for the shapes a small lockfile does not reach   |
-# | v1.json                | a version 1 lockfile, with the nested dependencies tree      |
-# | registry-mismatch.json | every shape of resolved URL, for the registry check          |
+# | Fixture                   | What it is                                                  |
+# |---------------------------|-------------------------------------------------------------|
+# | npm-v3.json               | a real lockfile written by npm install                      |
+# | npm-v2.json               | a real lockfile written by npm install with lockfileVersion 2 |
+# | v3.json                   | hand-built, for the shapes a small lockfile does not reach   |
+# | v1.json                   | a version 1 lockfile, with the nested dependencies tree      |
+# | registry-mismatch.json    | every shape of resolved URL, for the registry check          |
+# | diff-base.json            | the base of a diff, with one of every case                   |
+# | diff-head.json            | the head of that diff                                        |
+# | diff-base-v1.json         | a version 1 base that shares packages with the head          |
 #
 # ## The real ones are real
 #
@@ -28,6 +31,30 @@
 # Its shape is taken from npm's documentation of the format, and the tree is
 # the one npm wrote before version 7: a hierarchy of dependencies rather than a
 # flat map.
+#
+# ## The diff pair
+#
+# `diff-base.json` and `diff-head.json` are one of every case, so the diff has a
+# single place that shows all of them:
+#
+# | Package                  | In the base | In the head | Verdict |
+# |--------------------------|-------------|-------------|---------|
+# | existing                 | yes         | yes         | silent  |
+# | upgraded                 | v1.0.0      | v2.0.0      | silent  |
+# | gained-a-script          | no script   | script      | finding |
+# | always-had-a-script      | script      | script      | silent  |
+# | brand-new                | no          | yes         | finding |
+# | brand-new-with-a-script  | no          | yes, script | finding |
+#
+# The version bump is the case that decides whether the check is usable. A
+# dependency update is the most ordinary thing in a lockfile, and if it read as
+# a new package then every dependency bump in every pull request would be a
+# finding.
+#
+# `diff-base-v1.json` is a version 1 base that shares packages with the head.
+# It has to share them, or the version floor test would pass without testing
+# anything: a base with nothing in common has no package to have gained a
+# script.
 #
 # ## Every shape of resolved URL
 #

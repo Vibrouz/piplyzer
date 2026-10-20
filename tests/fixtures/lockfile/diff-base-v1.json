@@ -1,0 +1,18 @@
+{
+  "name": "base",
+  "version": "1.0.0",
+  "lockfileVersion": 1,
+  "requires": true,
+  "dependencies": {
+    "gained-a-script": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/gained-a-script/-/gained-a-script-1.0.0.tgz",
+      "integrity": "sha512-gained"
+    },
+    "always-had-a-script": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/always-had-a-script/-/always-had-a-script-1.0.0.tgz",
+      "integrity": "sha512-always"
+    }
+  }
+}
