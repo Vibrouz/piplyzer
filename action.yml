@@ -1,0 +1,54 @@
+name: ppe
+description: Scan GitHub Actions workflows and npm lockfiles for supply chain attack patterns.
+author: Vibrouz
+
+inputs:
+  version:
+    description: The ppe release to run.
+    required: false
+    default: v0.1.0
+
+runs:
+  using: composite
+  steps:
+    - name: Download ppe
+      shell: bash
+      env:
+        # github.action_ref and github.action_repository are only available
+        # through the env context of a composite action, not in a run keyword.
+        PPE_VERSION: ${{ inputs.version }}
+        PPE_REPOSITORY: ${{ github.action_repository }}
+        RUNNER_ARCH: ${{ runner.arch }}
+      run: |
+        set -euo pipefail
+
+        case "$RUNNER_ARCH" in
+          X64)  asset="ppe-linux-amd64" ;;
+          ARM64) asset="ppe-linux-arm64" ;;
+          *) echo "ppe: unsupported runner architecture: $RUNNER_ARCH" >&2; exit 1 ;;
+        esac
+
+        url="https://github.com/${PPE_REPOSITORY}/releases/download/${PPE_VERSION}/${asset}"
+        echo "ppe: downloading ${url}"
+        curl --fail --silent --show-error --location --retry 3 --output "${RUNNER_TEMP}/ppe" "$url"
+        chmod +x "${RUNNER_TEMP}/ppe"
+
+    - name: Scan workflows
+      shell: bash
+      run: |
+        set -euo pipefail
+        "${RUNNER_TEMP}/ppe" scan .
+
+    - name: Check dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        # A repository with no npm dependencies has no lockfile to check, and
+        # the check exits 2 when there is nothing to read. Skipping it here
+        # keeps the action usable on a repository that is not a JavaScript
+        # project, which is most of them.
+        if [ ! -f package-lock.json ]; then
+          echo "ppe: no package-lock.json, skipping the dependency check"
+          exit 0
+        fi
+        "${RUNNER_TEMP}/ppe" deps .
