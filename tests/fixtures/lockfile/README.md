@@ -1,11 +1,12 @@
 # Fixtures for the lockfile reader.
 #
-# | Fixture          | What it is                                                  |
-# |------------------|-------------------------------------------------------------|
-# | npm-v3.json      | a real lockfile written by npm install                      |
-# | npm-v2.json      | a real lockfile written by npm install with lockfileVersion 2 |
-# | v3.json          | hand-built, for the shapes a small lockfile does not reach   |
-# | v1.json          | a version 1 lockfile, with the nested dependencies tree      |
+# | Fixture                | What it is                                                  |
+# |------------------------|-------------------------------------------------------------|
+# | npm-v3.json            | a real lockfile written by npm install                      |
+# | npm-v2.json            | a real lockfile written by npm install with lockfileVersion 2 |
+# | v3.json                | hand-built, for the shapes a small lockfile does not reach   |
+# | v1.json                | a version 1 lockfile, with the nested dependencies tree      |
+# | registry-mismatch.json | every shape of resolved URL, for the registry check          |
 #
 # ## The real ones are real
 #
@@ -27,6 +28,26 @@
 # Its shape is taken from npm's documentation of the format, and the tree is
 # the one npm wrote before version 7: a hierarchy of dependencies rather than a
 # flat map.
+#
+# ## Every shape of resolved URL
+#
+# `registry-mismatch.json` has one package for each shape the registry check has
+# to tell apart, which is the point of it:
+#
+# | Package                       | Resolved from                | Verdict |
+# |-------------------------------|------------------------------|---------|
+# | from-the-right-registry       | the default registry         | silent  |
+# | the-npmjs-magic-value         | registry.npmjs.org           | silent  |
+# | a-relative-path               | a relative path              | silent  |
+# | @myorg/from-the-scope-registry| the scope's private registry | silent  |
+# | from-another-registry         | a third host                 | finding |
+#
+# The npmjs.org case is the one that matters most and the one a check that
+# compared strings would get wrong. It is what npm writes for every package in
+# a lockfile created against the public registry, which is most lockfiles, and
+# it means "the currently configured registry" rather than that host. The
+# relative path is the same idea: npm resolves it against the registry serving
+# the package.
 #
 # ## The version matters more than it looks
 #
