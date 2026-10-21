@@ -48,18 +48,18 @@ jobs:
             exit 1
           fi
 
-          # The reusable workflow names a version too, and it has to be this
-          # release as well. The workflow is what a caller runs, so a workflow
-          # pointing at a different release would have the caller running one
-          # version's action against another version's rules.
+          # The reusable workflow names a release too, and it has to be this
+          # release. The workflow is what a caller runs, so a workflow
+          # pointing at a different release would have the caller running
+          # one version's action against another version's rules.
           if [ ! -f .github/workflows/ppe.yml ]; then
             echo "::error::.github/workflows/ppe.yml is missing" >&2
             exit 1
           fi
           workflow_version=$(awk '
             /^[[:space:]]*#/ { next }
-            /uses: Vibrouz\/whoa@/ {
-              sub(/.*@/, "")
+            /^[[:space:]]+version:[[:space:]]+v/ {
+              sub(/.*version:[[:space:]]+/, "")
               sub(/[[:space:]].*$/, "")
               print
               exit
@@ -99,8 +99,23 @@ jobs:
           # --verify-tag because the tag has to already exist. Without it gh
           # would create one from the default branch, which would publish a
           # release whose tag points at code that was never tagged.
+          #
+          # The notes carry the commit, because that is what a caller has to
+          # pin. A tag would be easier to write and ppe's own rule 1 blocks
+          # it, and a caller who has not installed ppe has nothing stopping
+          # them writing one. Putting the commit in the notes is the
+          # difference between the setup being a copy and paste and the
+          # setup being a hunt through the repository.
           gh release create "${GITHUB_REF_NAME}" \
             --verify-tag \
             --title "${GITHUB_REF_NAME}" \
-            --notes "ppe ${GITHUB_REF_NAME}." \
+            --notes "ppe ${GITHUB_REF_NAME}.
+
+          The reusable workflow, for a caller who wants the check and nothing else:
+
+            uses: Vibrouz/whoa/.github/workflows/ppe.yml@${GITHUB_SHA}
+
+          The action, for a caller who wants the check inside a job they control:
+
+            uses: Vibrouz/whoa@${GITHUB_SHA}" \
             ppe-linux-amd64 ppe-linux-arm64
