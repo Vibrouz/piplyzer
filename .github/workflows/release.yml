@@ -47,6 +47,33 @@ jobs:
             echo "::error::update the default in action.yml and commit it before tagging" >&2
             exit 1
           fi
+
+          # The reusable workflow names a version too, and it has to be this
+          # release as well. The workflow is what a caller runs, so a workflow
+          # pointing at a different release would have the caller running one
+          # version's action against another version's rules.
+          if [ ! -f .github/workflows/ppe.yml ]; then
+            echo "::error::.github/workflows/ppe.yml is missing" >&2
+            exit 1
+          fi
+          workflow_version=$(awk '
+            /^[[:space:]]*#/ { next }
+            /uses: Vibrouz\/whoa@/ {
+              sub(/.*@/, "")
+              sub(/[[:space:]].*$/, "")
+              print
+              exit
+            }
+          ' .github/workflows/ppe.yml)
+          if [ -z "$workflow_version" ]; then
+            echo "::error::no version found in the reusable workflow" >&2
+            exit 1
+          fi
+          if [ "${GITHUB_REF_NAME}" != "$workflow_version" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match the reusable workflow's version ${workflow_version}" >&2
+            echo "::error::update the version in .github/workflows/ppe.yml and commit it before tagging" >&2
+            exit 1
+          fi
           echo "ppe: releasing ${version}"
 
       - name: Build
