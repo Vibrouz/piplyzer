@@ -6,11 +6,19 @@
 #   on: pull_request
 #   jobs:
 #     ppe:
-#       uses: Vibrouz/whoa/.github/workflows/ppe.yml@v0.1.2
+#       uses: Vibrouz/whoa/.github/workflows/ppe.yml@<commit sha>
 #
 # and a ruleset on the branch that requires this check. The check is named
 # after the job below, so it does not depend on what the caller chose to
 # call their job, and a caller cannot rename it.
+#
+# The commit is the one in the release notes for the version you want. A
+# tag would be easier to write and ppe's own rule 1 blocks it, because a
+# tag can be moved to point at code nobody reviewed, and refusing to be
+# fooled by a moved tag is the entire reason this tool exists. A caller
+# who has not installed ppe in their own repository has nothing to stop
+# them writing a tag, so the rule is not the only thing standing between
+# them and a moved tag.
 #
 # This file lives here, in this repository, and not in the caller's. That is
 # the point. A caller cannot edit the steps, cannot take the checkout away,
@@ -26,7 +34,7 @@
 # The events. workflow_call is how a caller runs this. pull_request is how
 # this runs against its own repository, and it is what an organization
 # ruleset requires. merge_group is the merge queue, which is not used here,
-# but it costs nothing to leave in and is one less thing to add later.
+# but it costs nothing to leave in and it is one less thing to add later.
 on:
   workflow_call:
   pull_request:
@@ -51,8 +59,15 @@ jobs:
       # instead of eight is worth more than those settings are.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      # The action, at the same release as this file. The release workflow
-      # refuses to publish a tag that disagrees with either this line or the
-      # version in action.yml, so the workflow, the action and the binary the
-      # action downloads are always the same release.
-      - uses: Vibrouz/whoa@v0.1.2
+      # The action, pinned by commit, with the release it downloads given
+      # separately.
+      #
+      # Pinning by commit is what rule 1 asks for and what it should ask
+      # for. A tag can be moved, and a moved tag runs code that nobody
+      # reviewed, so the two things are split: the downloader is pinned
+      # because it is code that runs, and the version is an input because
+      # it is a release to fetch. The downloader does not change, so its
+      # commit does not either, and the version moves on every release.
+      - uses: Vibrouz/whoa@a0bcef2c5495bd3894e6807b63892c7c5719bb56
+        with:
+          version: v0.1.2
