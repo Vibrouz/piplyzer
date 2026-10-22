@@ -78,6 +78,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, env func(stri
 		return scan(cmd, stdin, stdout, stderr, env)
 	case kindDeps:
 		return depsCommand(cmd, stdout, stderr, env)
+	case kindServe:
+		return serve(cmd, stdout, stderr, env)
 	}
 
 	// parseArgs only returns the kinds above, so reaching here means the parser
@@ -93,12 +95,14 @@ and the npm dependencies they pull in.
 usage:
   ppe scan [flags] [path...]
   ppe deps [flags] [path...]
+  ppe serve [flags]
   ppe --help
   ppe --version
 
 commands:
   scan      scan workflows and exit non-zero if anything blocks
   deps      check the npm lockfile and exit non-zero if anything blocks
+  serve     run the GitHub App webhook server that posts a check run
 
 Running ppe with no command is an error rather than a scan of the current
 directory, so that a mistyped command line cannot be read as a clean result.
@@ -110,6 +114,14 @@ flags:
                                to use, instead of discovering it
       --version               print the version
   -h, --help                  print this help
+
+serve flags:
+      --addr <host:port>      address to listen on (default :8080)
+      --workers <n>           scans to run at once (default 4)
+      --timeout <duration>    how long one scan may take (default 60s)
+
+serve reads its credentials from the environment:
+  PPE_APP_ID, PPE_PRIVATE_KEY_PATH, PPE_WEBHOOK_SECRET
 
 arguments:
   path    a file, or a directory to search for workflows. Repeatable.

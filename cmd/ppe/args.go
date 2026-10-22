@@ -3,7 +3,9 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // commandKind is which subcommand was asked for.
@@ -12,6 +14,7 @@ type commandKind int
 const (
 	kindScan commandKind = iota
 	kindDeps
+	kindServe
 	kindHelp
 	kindVersion
 )
@@ -41,6 +44,12 @@ type command struct {
 	// noDiff is set by --no-diff, which skips the checks that need a base
 	// commit and runs only the ones that do not.
 	noDiff bool
+
+	// serve settings. They are only meaningful for kindServe, and the parser
+	// rejects values that cannot work rather than leaving them to fail later.
+	addr    string
+	workers int
+	timeout time.Duration
 }
 
 // scanDefaults is the current directory, spelled as "." rather than resolved, so
@@ -68,7 +77,7 @@ func parseArgs(args []string) (command, error) {
 	// error, and it exits 2 like every other invocation that did not perform a
 	// scan.
 	if len(args) == 0 {
-		return command{}, errors.New("no command given. The commands are scan and deps.")
+		return command{}, errors.New("no command given. The commands are scan, deps and serve.")
 	}
 
 	cmd := command{kind: kindScan}
@@ -91,6 +100,12 @@ func parseArgs(args []string) (command, error) {
 				case "deps":
 					cmd.kind = kindDeps
 					sawCommand = true
+				case "serve":
+					cmd.kind = kindServe
+					cmd.addr = ":8080"
+					cmd.workers = 4
+					cmd.timeout = 60 * time.Second
+					sawCommand = true
 				case "help":
 					cmd.kind = kindHelp
 					return cmd, nil
@@ -98,7 +113,7 @@ func parseArgs(args []string) (command, error) {
 					cmd.kind = kindVersion
 					return cmd, nil
 				default:
-					return cmd, fmt.Errorf("unknown command %q. The commands are scan and deps.", arg)
+					return cmd, fmt.Errorf("unknown command %q. The commands are scan, deps and serve.", arg)
 				}
 				continue
 			}
@@ -131,9 +146,54 @@ func parseArgs(args []string) (command, error) {
 				value = args[i]
 			}
 			cmd.registry = value
+		case "--addr":
+			if !hasValue {
+				if i+1 >= len(args) {
+					return cmd, errors.New("--addr needs a value")
+				}
+				i++
+				value = args[i]
+			}
+			if strings.TrimSpace(value) == "" {
+				return cmd, errors.New("--addr needs a value")
+			}
+			cmd.addr = value
+		case "--workers":
+			if !hasValue {
+				if i+1 >= len(args) {
+					return cmd, errors.New("--workers needs a value")
+				}
+				i++
+				value = args[i]
+			}
+			n, err := strconv.Atoi(value)
+			if err != nil || n <= 0 {
+				return cmd, errors.New("--workers must be a positive integer")
+			}
+			cmd.workers = n
+		case "--timeout":
+			if !hasValue {
+				if i+1 >= len(args) {
+					return cmd, errors.New("--timeout needs a value")
+				}
+				i++
+				value = args[i]
+			}
+			d, err := time.ParseDuration(value)
+			if err != nil || d <= 0 {
+				return cmd, errors.New("--timeout must be a positive duration, such as 60s")
+			}
+			cmd.timeout = d
 		default:
 			return cmd, fmt.Errorf("unknown flag %q", name)
 		}
+	}
+
+	if cmd.kind == kindServe {
+		if len(cmd.paths) > 0 || cmd.stdin {
+			return cmd, errors.New("serve takes no paths")
+		}
+		return cmd, nil
 	}
 
 	// No paths means the current directory, resolved by the caller.
