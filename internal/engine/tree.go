@@ -25,10 +25,10 @@ type TreeReport struct {
 	Sources []Source
 	// Skipped counts files that were present but are not workflows.
 	Skipped int
-	// Unreadable counts files that look like workflows but could not be read.
-	// A caller that is a merge gate has to treat this as a failure, because a
-	// file it could not read is a file it did not check.
-	Unreadable int
+	// Unreadable names files that look like workflows but could not be read,
+	// relative to the root. A caller that is a merge gate has to treat this as
+	// a failure, because a file it could not read is a file it did not check.
+	Unreadable []string
 }
 
 // Tree reads the workflows under a repository root.
@@ -57,7 +57,7 @@ func Tree(root string) (TreeReport, error) {
 
 	walkErr := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			rep.Unreadable++
+			rep.Unreadable = append(rep.Unreadable, relPath(root, path))
 			return nil
 		}
 		if d.IsDir() {
@@ -71,19 +71,15 @@ func Tree(root string) (TreeReport, error) {
 		// attacker-controlled. Refusing anything that is not a regular file
 		// keeps a pull request from turning a scan into a read of the runner.
 		if !d.Type().IsRegular() {
-			rep.Unreadable++
+			rep.Unreadable = append(rep.Unreadable, relPath(root, path))
 			return nil
 		}
 		data, readErr := os.ReadFile(path)
 		if readErr != nil {
-			rep.Unreadable++
+			rep.Unreadable = append(rep.Unreadable, relPath(root, path))
 			return nil
 		}
-		rel, relErr := filepath.Rel(root, path)
-		if relErr != nil {
-			rel = path
-		}
-		rep.Sources = append(rep.Sources, Source{Path: filepath.ToSlash(rel), Data: data})
+		rep.Sources = append(rep.Sources, Source{Path: relPath(root, path), Data: data})
 		return nil
 	})
 	if walkErr != nil {
@@ -92,6 +88,15 @@ func Tree(root string) (TreeReport, error) {
 
 	sort.Slice(rep.Sources, func(i, j int) bool { return rep.Sources[i].Path < rep.Sources[j].Path })
 	return rep, nil
+}
+
+// relPath names a path the way output should, relative to the root.
+func relPath(root, path string) string {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		rel = path
+	}
+	return filepath.ToSlash(rel)
 }
 
 // isWorkflowFile reports whether a path has a workflow extension.

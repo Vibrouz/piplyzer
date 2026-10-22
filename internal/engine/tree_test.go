@@ -41,8 +41,8 @@ func TestTreeReadsWorkflowsRelativeToTheRoot(t *testing.T) {
 	if rep.Skipped != 1 {
 		t.Errorf("skipped %d, want 1", rep.Skipped)
 	}
-	if rep.Unreadable != 0 {
-		t.Errorf("unreadable %d, want 0", rep.Unreadable)
+	if len(rep.Unreadable) != 0 {
+		t.Errorf("unreadable %v, want none", rep.Unreadable)
 	}
 
 	// The paths are relative so that a finding names the file the way a reader
@@ -59,7 +59,7 @@ func TestTreeWithoutAWorkflowDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rep.Sources) != 0 || rep.Skipped != 0 || rep.Unreadable != 0 {
+	if len(rep.Sources) != 0 || rep.Skipped != 0 || len(rep.Unreadable) != 0 {
 		t.Fatalf("got %+v, want an empty report", rep)
 	}
 }
@@ -82,7 +82,7 @@ func TestTreeRefusesASymlinkedWorkflow(t *testing.T) {
 	if len(rep.Sources) != 1 {
 		t.Fatalf("got %d sources, want 1", len(rep.Sources))
 	}
-	if rep.Unreadable != 1 {
-		t.Errorf("unreadable %d, want 1", rep.Unreadable)
+	if len(rep.Unreadable) != 1 || rep.Unreadable[0] != ".github/workflows/link.yml" {
+		t.Errorf("unreadable %v", rep.Unreadable)
 	}
 }

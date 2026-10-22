@@ -65,6 +65,15 @@ func (r Report) Blocks() int {
 	return n
 }
 
+// Findings returns every finding across the report, in file order.
+func (r Report) Findings() findings.Findings {
+	var out findings.Findings
+	for _, f := range r.Files {
+		out = append(out, f.Findings...)
+	}
+	return out
+}
+
 // Warnings counts the findings that are not blocking.
 func (r Report) Warnings() int {
 	n := 0
