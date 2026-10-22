@@ -237,7 +237,10 @@ func TestScannerPostsAFailureForABlockingFinding(t *testing.T) {
 	}
 }
 
-func TestScannerFailsWhenThereAreNoWorkflows(t *testing.T) {
+func TestScannerPassesWhenThereAreNoWorkflows(t *testing.T) {
+	// The tree is the repository root, so no workflows means there is no
+	// Actions attack surface to check. A repository that does not use Actions
+	// can require the check from day one without blocking every pull request.
 	gh := &fakeGitHub{tarballs: map[string][]byte{
 		"/o/r/tar.gz/sha": testTarball(t, tarEntry{name: "README.md", body: "hi\n"}),
 	}}
@@ -246,10 +249,10 @@ func TestScannerFailsWhenThereAreNoWorkflows(t *testing.T) {
 	if len(checks) != 1 {
 		t.Fatalf("posted %d checks, want 1", len(checks))
 	}
-	if got := conclusionOf(t, checks[0]); got != "failure" {
-		t.Errorf("conclusion is %q, want failure", got)
+	if got := conclusionOf(t, checks[0]); got != "success" {
+		t.Errorf("conclusion is %q, want success", got)
 	}
-	if title, _ := outputOf(t, checks[0])["title"].(string); title != "Scan incomplete" {
+	if title, _ := outputOf(t, checks[0])["title"].(string); title != "No workflows found" {
 		t.Errorf("title is %q", title)
 	}
 }

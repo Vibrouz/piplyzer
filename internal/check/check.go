@@ -63,6 +63,14 @@ type Result struct {
 	// DepsErr is set when a lockfile was present but could not be read. That
 	// is a gap, not a clean dependency result.
 	DepsErr error
+	// AllowNoWorkflows treats an empty workflow set as a successful scan.
+	//
+	// The server sets it because it knows the tree is the repository root and
+	// .github/workflows is the only place Actions runs from, so finding nothing
+	// there means there is nothing to check. The CLI does not set it: a path on
+	// a command line can be a typo, and reporting a typo as a clean repository
+	// is the false clean the exit code exists to prevent.
+	AllowNoWorkflows bool
 }
 
 // Evaluate decides the conclusion and renders the output.
@@ -117,7 +125,11 @@ func Evaluate(r Result) (Conclusion, Output) {
 	}
 
 	if b.Len() == 0 {
-		b.WriteString("No findings.\n")
+		if len(r.Scan.Files) == 0 && r.AllowNoWorkflows {
+			b.WriteString("No workflows found, so there was nothing to check.\n")
+		} else {
+			b.WriteString("No findings.\n")
+		}
 	}
 
 	title := "No issues found"
@@ -126,6 +138,8 @@ func Evaluate(r Result) (Conclusion, Output) {
 		title = fmt.Sprintf("%s found", plural(blocks, "blocking issue", "blocking issues"))
 	case incomplete:
 		title = "Scan incomplete"
+	case len(r.Scan.Files) == 0 && r.AllowNoWorkflows:
+		title = "No workflows found"
 	case warnings > 0:
 		title = fmt.Sprintf("No blocking issues, %s", plural(warnings, "warning", "warnings"))
 	}
@@ -156,7 +170,7 @@ func Evaluate(r Result) (Conclusion, Output) {
 func (r Result) incomplete() bool {
 	return len(r.Scan.Unchecked) > 0 ||
 		len(r.Unreadable) > 0 ||
-		len(r.Scan.Files) == 0 ||
+		(len(r.Scan.Files) == 0 && !r.AllowNoWorkflows) ||
 		r.DepsErr != nil
 }
 

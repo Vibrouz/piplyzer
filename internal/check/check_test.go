@@ -49,11 +49,17 @@ func TestEvaluate(t *testing.T) {
 			title:      "1 blocking issue found",
 			text:       "**PPE-002** `.github/workflows/ci.yml:12`",
 		},
-		"no workflows": {
+		"no workflows without the opt-in": {
 			result:     Result{},
 			conclusion: Failure,
 			title:      "Scan incomplete",
 			text:       "no workflows were found",
+		},
+		"no workflows where the scope is known": {
+			result:     Result{AllowNoWorkflows: true},
+			conclusion: Success,
+			title:      "No workflows found",
+			text:       "nothing to check",
 		},
 		"parse error": {
 			result: Result{Scan: engine.Report{

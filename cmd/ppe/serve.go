@@ -230,8 +230,9 @@ func (s *scanner) process(ctx context.Context, d webhook.Delivery) {
 
 	repo, _ := parse.ParseRepository(d.Repo)
 	result := check.Result{
-		Scan:       engine.Scan(rep.Sources, repo),
-		Unreadable: rep.Unreadable,
+		Scan:             engine.Scan(rep.Sources, repo),
+		Unreadable:       rep.Unreadable,
+		AllowNoWorkflows: true,
 	}
 
 	// The dependency check compares against a base commit when it can. A
