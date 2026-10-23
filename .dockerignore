@@ -1,0 +1,11 @@
+.git
+.github
+.gitignore
+.ppe
+plans
+scripts
+*.md
+/ppe
+*.test
+*.out
+coverage.out
