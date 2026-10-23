@@ -80,6 +80,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, env func(stri
 		return depsCommand(cmd, stdout, stderr, env)
 	case kindServe:
 		return serve(cmd, stdout, stderr, env)
+	case kindSetup:
+		return setup(cmd, stdout, stderr, env)
 	}
 
 	// parseArgs only returns the kinds above, so reaching here means the parser
@@ -96,6 +98,7 @@ usage:
   ppe scan [flags] [path...]
   ppe deps [flags] [path...]
   ppe serve [flags]
+  ppe setup [flags]
   ppe --help
   ppe --version
 
@@ -103,6 +106,7 @@ commands:
   scan      scan workflows and exit non-zero if anything blocks
   deps      check the npm lockfile and exit non-zero if anything blocks
   serve     run the GitHub App webhook server that posts a check run
+  setup     create a GitHub App and write its credentials locally
 
 Running ppe with no command is an error rather than a scan of the current
 directory, so that a mistyped command line cannot be read as a clean result.
@@ -122,6 +126,16 @@ serve flags:
 
 serve reads its credentials from the environment:
   PPE_APP_ID, PPE_PRIVATE_KEY_PATH, PPE_WEBHOOK_SECRET
+
+setup flags:
+      --addr <host:port>      local callback address (default 127.0.0.1:8081)
+      --config-dir <dir>      where to write app.pem and config.env
+                               (default PPE_CONFIG_DIR, then the user config
+                               directory)
+
+setup prints a local URL. Open it to create the GitHub App; GitHub returns a
+one-time code to the local callback, which ppe exchanges for the private key.
+The key is written with mode 0600 and is needed by serve.
 
 arguments:
   path    a file, or a directory to search for workflows. Repeatable.

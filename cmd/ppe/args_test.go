@@ -294,6 +294,59 @@ func TestParseArgsServeFlags(t *testing.T) {
 	}
 }
 
+func TestParseArgsSetup(t *testing.T) {
+	cmd, err := parseArgs([]string{"setup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.kind != kindSetup {
+		t.Errorf("kind = %v, want setup", cmd.kind)
+	}
+	if cmd.addr != "127.0.0.1:8081" {
+		t.Errorf("addr = %q", cmd.addr)
+	}
+	if len(cmd.paths) != 0 || cmd.stdin {
+		t.Errorf("setup took an input: %+v", cmd)
+	}
+}
+
+func TestParseArgsSetupFlags(t *testing.T) {
+	cmd, err := parseArgs([]string{"setup", "--addr", "127.0.0.1:9001", "--config-dir=/tmp/ppe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.addr != "127.0.0.1:9001" || cmd.configDir != "/tmp/ppe" {
+		t.Errorf("flags are %+v", cmd)
+	}
+}
+
+func TestParseArgsSetupRejects(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"a path", []string{"setup", "somewhere"}, "setup takes no paths"},
+		{"stdin", []string{"setup", "-"}, "setup takes no paths"},
+		{"missing addr", []string{"setup", "--addr"}, "needs a value"},
+		{"empty addr", []string{"setup", "--addr="}, "needs a value"},
+		{"missing config dir", []string{"setup", "--config-dir"}, "needs a value"},
+		{"empty config dir", []string{"setup", "--config-dir="}, "needs a value"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseArgs(tt.args)
+			if err == nil {
+				t.Fatalf("parseArgs(%v) succeeded, want an error", tt.args)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error = %q, want it to mention %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseArgsServeRejects(t *testing.T) {
 	tests := []struct {
 		name string
