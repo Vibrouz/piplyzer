@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseArgsDefaults(t *testing.T) {
@@ -262,5 +263,128 @@ func TestRunHelpGoesToStdout(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Errorf("stderr = %q, want nothing", stderr.String())
+	}
+}
+
+func TestParseArgsServeDefaults(t *testing.T) {
+	cmd, err := parseArgs([]string{"serve"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.kind != kindServe {
+		t.Errorf("kind = %v, want serve", cmd.kind)
+	}
+	if cmd.addr != ":8080" || cmd.workers != 4 || cmd.timeout != 60*time.Second {
+		t.Errorf("defaults are %+v", cmd)
+	}
+	// serve has no positional argument, so the scan default of "." must not be
+	// applied to it.
+	if len(cmd.paths) != 0 || cmd.stdin {
+		t.Errorf("serve took an input: %+v", cmd)
+	}
+}
+
+func TestParseArgsServeFlags(t *testing.T) {
+	cmd, err := parseArgs([]string{"serve", "--addr", ":9000", "--workers=8", "--timeout", "30s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.addr != ":9000" || cmd.workers != 8 || cmd.timeout != 30*time.Second {
+		t.Errorf("flags are %+v", cmd)
+	}
+}
+
+func TestParseArgsSetup(t *testing.T) {
+	cmd, err := parseArgs([]string{"setup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.kind != kindSetup {
+		t.Errorf("kind = %v, want setup", cmd.kind)
+	}
+	if cmd.addr != "127.0.0.1:8081" {
+		t.Errorf("addr = %q", cmd.addr)
+	}
+	if len(cmd.paths) != 0 || cmd.stdin {
+		t.Errorf("setup took an input: %+v", cmd)
+	}
+}
+
+func TestParseArgsSetupFlags(t *testing.T) {
+	cmd, err := parseArgs([]string{"setup", "--addr", "127.0.0.1:9001", "--config-dir=/tmp/ppe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.addr != "127.0.0.1:9001" || cmd.configDir != "/tmp/ppe" {
+		t.Errorf("flags are %+v", cmd)
+	}
+}
+
+func TestParseArgsSetupRejects(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"a path", []string{"setup", "somewhere"}, "setup takes no paths"},
+		{"stdin", []string{"setup", "-"}, "setup takes no paths"},
+		{"missing addr", []string{"setup", "--addr"}, "needs a value"},
+		{"empty addr", []string{"setup", "--addr="}, "needs a value"},
+		{"missing config dir", []string{"setup", "--config-dir"}, "needs a value"},
+		{"empty config dir", []string{"setup", "--config-dir="}, "needs a value"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseArgs(tt.args)
+			if err == nil {
+				t.Fatalf("parseArgs(%v) succeeded, want an error", tt.args)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error = %q, want it to mention %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseArgsServeRejects(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"a path", []string{"serve", "somewhere"}, "serve takes no paths"},
+		{"stdin", []string{"serve", "-"}, "serve takes no paths"},
+		{"zero workers", []string{"serve", "--workers", "0"}, "positive integer"},
+		{"bad workers", []string{"serve", "--workers", "lots"}, "positive integer"},
+		{"bad timeout", []string{"serve", "--timeout", "soon"}, "positive duration"},
+		{"zero timeout", []string{"serve", "--timeout", "0s"}, "positive duration"},
+		{"missing addr", []string{"serve", "--addr"}, "needs a value"},
+		{"missing workers", []string{"serve", "--workers"}, "needs a value"},
+		{"missing timeout", []string{"serve", "--timeout"}, "needs a value"},
+		{"empty addr", []string{"serve", "--addr="}, "needs a value"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseArgs(tt.args)
+			if err == nil {
+				t.Fatalf("parseArgs(%v) succeeded, want an error", tt.args)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error = %q, want it to mention %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestServeWithoutCredentialsExitsIncomplete(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"serve"}, strings.NewReader(""), &stdout, &stderr, testEnv(t))
+	if code != exitIncomplete {
+		t.Errorf("exit = %d, want %d", code, exitIncomplete)
+	}
+	if !strings.Contains(stderr.String(), "PPE_WEBHOOK_SECRET") {
+		t.Errorf("stderr = %q, want the missing variable named", stderr.String())
 	}
 }

@@ -6,9 +6,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Vibrouz/whoa/internal/engine"
 	"github.com/Vibrouz/whoa/internal/findings"
 	"github.com/Vibrouz/whoa/internal/parse"
-	"github.com/Vibrouz/whoa/internal/rules"
 )
 
 // currentRepository reads the repository the scan is running in, if it is known.
@@ -152,44 +152,25 @@ type unreadable struct {
 // extension, because counting it as a scanned workflow says the scan looked at
 // something it did not look at.
 func runAll(found collection, repo parse.Repository) ([]checked, []unreadable, int) {
-	var out []checked
-	var bad []unreadable
-	notWorkflows := 0
-
-	for _, src := range found.sources {
-		// The name rather than the path, so a stdin finding renders as
-		// "<stdin>:25" instead of "(no file)".
-		//
-		// The parse error is not wrapped again with the name: ParseFile already
-		// puts the path at the front of its message.
-		//
-		// The repository is passed in when the caller knows it, so that rule 10
-		// can tell a reference to this repository from a reference to a third
-		// party one. It is zero for a scan of a bare directory, and the rule
-		// says so in its message rather than guessing.
-		var file *parse.File
-		var err error
-		if repo.IsZero() {
-			file, err = parse.ParseFile(src.name(), src.data)
-		} else {
-			file, err = parse.ParseWorkflow(src.name(), repo, src.data)
-		}
-		if err != nil {
-			bad = append(bad, unreadable{path: src.name(), err: err})
-			continue
-		}
-		if !file.IsWorkflow() {
-			notWorkflows++
-			continue
-		}
-		out = append(out, checked{
-			path:     src.path,
-			findings: rules.NewEngine().Run(file),
-			notices:  file.Notices,
-		})
+	sources := make([]engine.Source, len(found.sources))
+	for i, src := range found.sources {
+		sources[i] = engine.Source{Path: src.path, Data: src.data}
 	}
 
-	return out, bad, notWorkflows
+	rep := engine.Scan(sources, repo)
+
+	// The CLI has its own small result types because it renders them, and that
+	// rendering is the one thing the engine deliberately does not own. The
+	// conversion is the whole boundary.
+	out := make([]checked, len(rep.Files))
+	for i, file := range rep.Files {
+		out[i] = checked{path: file.Path, findings: file.Findings, notices: file.Notices}
+	}
+	bad := make([]unreadable, len(rep.Unchecked))
+	for i, file := range rep.Unchecked {
+		bad[i] = unreadable{path: file.Path, err: file.Err}
+	}
+	return out, bad, rep.NotWorkflows
 }
 
 // report writes the whole result: a summary, then what could not be checked,

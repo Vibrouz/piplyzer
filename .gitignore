@@ -11,6 +11,9 @@ plans/
 *.out
 coverage.out
 
+# Local GitHub App credentials created by "ppe setup" and scripts/local.sh.
+.ppe/
+
 # Editors / OS
 .DS_Store
 .idea/
