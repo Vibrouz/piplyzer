@@ -163,7 +163,7 @@ No local runner needed. The App is active immediately after manifest completion.
 |---------|-----|
 | `.piplyzer/app.pem` already exists | `setup` refuses to overwrite. Remove the directory or use a different `--config-dir`. |
 | No `--hook-url` and no local runner | Webhook stays on the placeholder (`https://example.com/piplyzer-webhook`) and receives nothing. Use `--hook-url` for standalone installs. |
-| Ruleset requires `piplyzer-check` | Old App name; update to require `piplyzer`. |
+| Ruleset requires `ppe` | Old check name; update the ruleset to require `piplyzer`. |
 | Direct push to `main` | Bypasses the gate; branch protection is required. |
 
 ## Design principles

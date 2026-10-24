@@ -207,7 +207,7 @@ func TestScannerPostsACleanCheck(t *testing.T) {
 	if got := conclusionOf(t, checks[0]); got != "success" {
 		t.Errorf("conclusion is %q, want success", got)
 	}
-	if got := checks[0]["name"]; got != "ppe" {
+	if got := checks[0]["name"]; got != "piplyzer" {
 		t.Errorf("check name is %v", got)
 	}
 	if got := checks[0]["head_sha"]; got != "sha" {

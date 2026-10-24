@@ -135,12 +135,12 @@ func TestParseArgsGrammar(t *testing.T) {
 	}
 }
 
-// A bare "ppe" with no arguments is an error, not a scan of the current
+// A bare "piplyzer" with no arguments is an error, not a scan of the current
 // directory.
 //
 // The exit code is the part that matters. Exit 0 means the scan finished and
-// nothing blocks, so a CI step running "piplyzer" where it meant "piplyzer scan ." would
-// read a mistyped command line as a clean repository.
+// nothing blocks, so a CI step running "piplyzer" where it meant "piplyzer
+// scan ." would read a mistyped command line as a clean repository.
 func TestParseArgsRejectsNoCommand(t *testing.T) {
 	_, err := parseArgs([]string{})
 	if err == nil {
@@ -154,7 +154,8 @@ func TestParseArgsRejectsNoCommand(t *testing.T) {
 // And the whole command does the same, so a CI step reading the exit code sees
 // a failure rather than a clean result.
 //
-// The arguments are genuinely empty here, which is what a bare "ppe" gives.
+// The arguments are genuinely empty here, which is what a bare "piplyzer"
+// gives.
 func TestNoCommandExitsIncomplete(t *testing.T) {
 	_, stderr, code := scanArgs(t, "")
 	if code != exitIncomplete {

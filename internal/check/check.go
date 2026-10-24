@@ -24,7 +24,7 @@ import (
 
 // Name is the check run name. It is the name a ruleset requires, so changing it
 // is a breaking change for every repository that has already configured one.
-const Name = "ppe"
+const Name = "piplyzer"
 
 const (
 	// maxSummary and maxText are below GitHub's 65535 character limit, leaving
