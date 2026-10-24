@@ -16,11 +16,11 @@ func TestSetupHandlerCreatesApp(t *testing.T) {
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		io.WriteString(w, `{"id":123,"slug":"ppe-x","pem":"PEMDATA","webhook_secret":"sekret"}`)
+		io.WriteString(w, `{"id":123,"slug":"piplyzer-x","pem":"PEMDATA","webhook_secret":"sekret"}`)
 	}))
 	defer fake.Close()
 
-	dir := filepath.Join(t.TempDir(), "ppe")
+	dir := filepath.Join(t.TempDir(), "piplyzer")
 	handler, results := newSetupHandler("state", `{"name":"x"}`, dir, fake.URL)
 
 	rec := httptest.NewRecorder()
@@ -32,7 +32,7 @@ func TestSetupHandlerCreatesApp(t *testing.T) {
 	if res.err != nil {
 		t.Fatalf("setup: %v", res.err)
 	}
-	if res.slug != "ppe-x" {
+	if res.slug != "piplyzer-x" {
 		t.Errorf("slug = %q", res.slug)
 	}
 	if gotPath != "/app-manifests/code/conversions" {
@@ -69,10 +69,10 @@ func TestSetupHandlerCreatesApp(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"PPE_APP_ID=123\n",
-		"PPE_WEBHOOK_SECRET=sekret\n",
-		"PPE_APP_SLUG=ppe-x\n",
-		"PPE_PRIVATE_KEY_PATH='" + keyPath + "'\n",
+		"PIPLYZER_APP_ID=123\n",
+		"PIPLYZER_WEBHOOK_SECRET=sekret\n",
+		"PIPLYZER_APP_SLUG=piplyzer-x\n",
+		"PIPLYZER_PRIVATE_KEY_PATH='" + keyPath + "'\n",
 	} {
 		if !strings.Contains(string(config), want) {
 			t.Errorf("config is missing %q:\n%s", want, config)
@@ -88,7 +88,7 @@ func TestSetupHandlerCreatesApp(t *testing.T) {
 }
 
 func TestSetupHandlerRejectsWrongState(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "ppe")
+	dir := filepath.Join(t.TempDir(), "piplyzer")
 	handler, results := newSetupHandler("state", `{}`, dir, "http://127.0.0.1:1")
 
 	rec := httptest.NewRecorder()
@@ -130,7 +130,7 @@ func TestShellValue(t *testing.T) {
 // GitHub rejects a manifest without a hook, even though the real URL is not
 // known until the runner has a tunnel.
 func TestManifestHasHook(t *testing.T) {
-	manifest, err := newManifest("http://127.0.0.1:8081/callback", "https://example.com/ppe-webhook")
+	manifest, err := newManifest("http://127.0.0.1:8081/callback", "https://example.com/piplyzer-webhook")
 	if err != nil {
 		t.Fatal(err)
 	}

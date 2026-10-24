@@ -1,22 +1,22 @@
-# The ppe scan, as a reusable workflow.
+# The piplyzer scan, as a reusable workflow.
 #
 # A caller needs three lines and nothing else:
 #
-#   name: ppe
+#   name: piplyzer
 #   on: pull_request
 #   jobs:
-#     ppe:
-#       uses: Vibrouz/whoa/.github/workflows/ppe.yml@<commit sha>
+#     piplyzer:
+#       uses: Vibrouz/whoa/.github/workflows/piplyzer.yml@<commit sha>
 #
 # and a ruleset on the branch that requires this check. The check is named
 # after the job below, so it does not depend on what the caller chose to
 # call their job, and a caller cannot rename it.
 #
 # The commit is the one in the release notes for the version you want. A
-# tag would be easier to write and ppe's own rule 1 blocks it, because a
+# tag would be easier to write and piplyzer's own rule 1 blocks it, because a
 # tag can be moved to point at code nobody reviewed, and refusing to be
 # fooled by a moved tag is the entire reason this tool exists. A caller
-# who has not installed ppe in their own repository has nothing to stop
+# who has not installed piplyzer in their own repository has nothing to stop
 # them writing a tag, so the rule is not the only thing standing between
 # them and a moved tag.
 #

@@ -1,28 +1,28 @@
 #!/usr/bin/env bash
-# Run the ppe GitHub App locally: create it on first run, start the container,
+# Run the piplyzer GitHub App locally: create it on first run, start the container,
 # open a Cloudflare Quick Tunnel, point the App webhook at that tunnel, and
 # keep the two processes together. The tunnel URL changes whenever this script
 # restarts, so the webhook is updated again each time.
 set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-config_dir=${PPE_CONFIG_DIR:-"$repo_root/.ppe"}
+config_dir=${PIPLYZER_CONFIG_DIR:-"$repo_root/.piplyzer"}
 # Docker treats a relative bind-mount source as a named volume, so resolve the
-# path before it reaches -v. PPE_CONFIG_DIR=.ppe is the obvious thing to type.
+# path before it reaches -v. PIPLYZER_CONFIG_DIR=.piplyzer is the obvious thing to type.
 case "$config_dir" in
 /*) ;;
 *) config_dir="$PWD/$config_dir" ;;
 esac
-image=ppe:local
-container=ppe-local
+image=piplyzer:local
+container=piplyzer-local
 # Overridable so the runner can run beside another service on this machine.
-port=${PPE_PORT:-8080}
+port=${PIPLYZER_PORT:-8080}
 setup_port=8081
 api=https://api.github.com
 
 for cmd in docker cloudflared openssl curl; do
 	if ! command -v "$cmd" >/dev/null 2>&1; then
-		echo "ppe: $cmd is required" >&2
+		echo "piplyzer: $cmd is required" >&2
 		exit 1
 	fi
 done
@@ -34,14 +34,14 @@ docker build -q -t "$image" "$repo_root" >/dev/null
 if [ ! -f "$config_dir/config.env" ]; then
 	mkdir -p "$config_dir"
 	chmod 700 "$config_dir"
-	echo "ppe: creating the GitHub App"
+	echo "piplyzer: creating the GitHub App"
 	docker run --rm \
 		-p "127.0.0.1:${setup_port}:8081" \
 		-v "$config_dir:/data" \
 		--user "$(id -u):$(id -g)" \
 		"$image" setup --addr 0.0.0.0:8081 --config-dir /data
 	if [ ! -f "$config_dir/config.env" ]; then
-		echo "ppe: setup did not write $config_dir/config.env" >&2
+		echo "piplyzer: setup did not write $config_dir/config.env" >&2
 		exit 1
 	fi
 fi
@@ -51,13 +51,13 @@ set -a
 . "$config_dir/config.env"
 set +a
 
-: "${PPE_APP_ID:?config.env is missing PPE_APP_ID}"
-: "${PPE_WEBHOOK_SECRET:?config.env is missing PPE_WEBHOOK_SECRET}"
-: "${PPE_APP_SLUG:?config.env is missing PPE_APP_SLUG}"
+: "${PIPLYZER_APP_ID:?config.env is missing PIPLYZER_APP_ID}"
+: "${PIPLYZER_WEBHOOK_SECRET:?config.env is missing PIPLYZER_WEBHOOK_SECRET}"
+: "${PIPLYZER_APP_SLUG:?config.env is missing PIPLYZER_APP_SLUG}"
 
 key="$config_dir/app.pem"
 if [ ! -f "$key" ]; then
-	echo "ppe: $key is missing" >&2
+	echo "piplyzer: $key is missing" >&2
 	exit 1
 fi
 
@@ -69,7 +69,7 @@ app_jwt() {
 	local now header payload signing sig
 	now=$(date +%s)
 	header=$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | b64url)
-	payload=$(printf '{"iat":%d,"exp":%d,"iss":%s}' "$((now - 60))" "$((now + 540))" "$PPE_APP_ID" | b64url)
+	payload=$(printf '{"iat":%d,"exp":%d,"iss":%s}' "$((now - 60))" "$((now + 540))" "$PIPLYZER_APP_ID" | b64url)
 	signing="$header.$payload"
 	if ! sig=$(printf '%s' "$signing" | openssl dgst -sha256 -sign "$key" 2>/dev/null); then
 		return 1
@@ -91,16 +91,16 @@ hook_url() {
 preflight_hook() {
 	local current
 	current=$(hook_url) || {
-		echo "ppe: could not read the App webhook; check the private key" >&2
+		echo "piplyzer: could not read the App webhook; check the private key" >&2
 		return 1
 	}
 	case "$current" in
-	"" | *".trycloudflare.com"* | "https://example.com/ppe-webhook")
+	"" | *".trycloudflare.com"* | "https://example.com/piplyzer-webhook")
 		return 0
 		;;
 	*)
-		echo "ppe: refusing to replace webhook $current" >&2
-		echo "ppe: this script only replaces Quick Tunnel URLs" >&2
+		echo "piplyzer: refusing to replace webhook $current" >&2
+		echo "piplyzer: this script only replaces Quick Tunnel URLs" >&2
 		return 1
 		;;
 	esac
@@ -109,7 +109,7 @@ preflight_hook() {
 patch_hook() {
 	local url=$1 jwt body
 	jwt=$(app_jwt) || return 1
-	body=$(printf '{"url":"%s","content_type":"json","secret":"%s"}' "$url/webhook" "$PPE_WEBHOOK_SECRET")
+	body=$(printf '{"url":"%s","content_type":"json","secret":"%s"}' "$url/webhook" "$PIPLYZER_WEBHOOK_SECRET")
 	curl -fsS -X PATCH \
 		-H "Authorization: Bearer $jwt" \
 		-H "Accept: application/vnd.github+json" \
@@ -133,14 +133,14 @@ patch_with_retry() {
 preflight_hook
 
 docker rm -f "$container" >/dev/null 2>&1 || true
-echo "ppe: starting the check server"
+echo "piplyzer: starting the check server"
 docker run -d --name "$container" \
 	--user "$(id -u):$(id -g)" \
 	-p "127.0.0.1:${port}:8080" \
 	-v "$config_dir:/data:ro" \
-	-e PPE_APP_ID \
-	-e PPE_WEBHOOK_SECRET \
-	-e PPE_PRIVATE_KEY_PATH=/data/app.pem \
+	-e PIPLYZER_APP_ID \
+	-e PIPLYZER_WEBHOOK_SECRET \
+	-e PIPLYZER_PRIVATE_KEY_PATH=/data/app.pem \
 	"$image" serve --addr :8080 >/dev/null
 
 healthy=0
@@ -155,13 +155,13 @@ for _ in {1..50}; do
 	sleep 0.2
 done
 if [ "$healthy" != 1 ]; then
-	echo "ppe: the check server did not become healthy" >&2
+	echo "piplyzer: the check server did not become healthy" >&2
 	docker logs "$container" >&2 || true
 	exit 1
 fi
 
 cf_pid=""
-cf_log=$(mktemp "${TMPDIR:-/tmp}/ppe-cloudflared.XXXXXX.log")
+cf_log=$(mktemp "${TMPDIR:-/tmp}/piplyzer-cloudflared.XXXXXX.log")
 tunnel_url=""
 stopping=0
 cleaned=0
@@ -192,7 +192,7 @@ start_tunnel() {
 	cf_pid=$!
 	for _ in {1..120}; do
 		if ! kill -0 "$cf_pid" 2>/dev/null; then
-			echo "ppe: cloudflared exited" >&2
+			echo "piplyzer: cloudflared exited" >&2
 			tail -n 20 "$cf_log" >&2 || true
 			cf_pid=""
 			return 1
@@ -203,7 +203,7 @@ start_tunnel() {
 		fi
 		sleep 0.5
 	done
-	echo "ppe: timed out waiting for a Quick Tunnel" >&2
+	echo "piplyzer: timed out waiting for a Quick Tunnel" >&2
 	tail -n 20 "$cf_log" >&2 || true
 	stop_tunnel
 	return 1
@@ -223,35 +223,35 @@ printed=0
 while :; do
 	if ! start_tunnel; then
 		[ "$stopping" = 1 ] && break
-		echo "ppe: retrying in 3s" >&2
+		echo "piplyzer: retrying in 3s" >&2
 		sleep 3
 		continue
 	fi
 	if ! wait_tunnel; then
-		echo "ppe: the tunnel is not reaching the server; retrying" >&2
+		echo "piplyzer: the tunnel is not reaching the server; retrying" >&2
 		stop_tunnel
 		sleep 2
 		continue
 	fi
 	if ! patch_with_retry; then
-		echo "ppe: could not update the webhook; retrying with a new tunnel" >&2
+		echo "piplyzer: could not update the webhook; retrying with a new tunnel" >&2
 		stop_tunnel
 		sleep 2
 		continue
 	fi
 
 	if [ "$printed" = 0 ]; then
-		echo "ppe: public URL: $tunnel_url"
-		echo "ppe: install it: https://github.com/apps/$PPE_APP_SLUG/installations/new"
-		echo "ppe: add a branch ruleset requiring the \"ppe\" check, then open a pull request"
+		echo "piplyzer: public URL: $tunnel_url"
+		echo "piplyzer: install it: https://github.com/apps/$PIPLYZER_APP_SLUG/installations/new"
+		echo "piplyzer: add a branch ruleset requiring the \"piplyzer\" check, then open a pull request"
 		printed=1
 	else
-		echo "ppe: tunnel restarted: $tunnel_url"
+		echo "piplyzer: tunnel restarted: $tunnel_url"
 	fi
 
 	wait "$cf_pid" || true
 	cf_pid=""
 	[ "$stopping" = 1 ] && break
-	echo "ppe: tunnel closed; reconnecting" >&2
+	echo "piplyzer: tunnel closed; reconnecting" >&2
 	sleep 1
 done

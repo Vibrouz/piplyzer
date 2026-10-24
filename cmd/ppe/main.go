@@ -1,4 +1,4 @@
-// Command ppe scans GitHub Actions workflows for supply chain attack patterns,
+// Command piplyzer scans GitHub Actions workflows for supply chain attack patterns,
 // and exits non-zero when it finds something that should block a merge.
 //
 // The scan is a pure function over the text of a workflow. Nothing here runs a
@@ -62,7 +62,7 @@ func main() {
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer, env func(string) string) int {
 	cmd, err := parseArgs(args)
 	if err != nil {
-		fmt.Fprintf(stderr, "ppe: %v\n\n", err)
+		fmt.Fprintf(stderr, "piplyzer: %v\n\n", err)
 		usage(stderr)
 		return exitIncomplete
 	}
@@ -72,7 +72,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, env func(stri
 		usage(stdout)
 		return exitOK
 	case kindVersion:
-		fmt.Fprintf(stdout, "ppe %s\n", version)
+		fmt.Fprintf(stdout, "piplyzer %s\n", version)
 		return exitOK
 	case kindScan:
 		return scan(cmd, stdin, stdout, stderr, env)
@@ -86,21 +86,21 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, env func(stri
 
 	// parseArgs only returns the kinds above, so reaching here means the parser
 	// and this switch have drifted, which is a bug rather than a user error.
-	fmt.Fprintf(stderr, "ppe: internal error, unhandled command kind %d\n", cmd.kind)
+	fmt.Fprintf(stderr, "piplyzer: internal error, unhandled command kind %d\n", cmd.kind)
 	return exitIncomplete
 }
 
 func usage(w io.Writer) {
-	fmt.Fprint(w, `ppe scans GitHub Actions workflows for supply chain attack patterns,
+	fmt.Fprint(w, `piplyzer scans GitHub Actions workflows for supply chain attack patterns,
 and the npm dependencies they pull in.
 
 usage:
-  ppe scan [flags] [path...]
-  ppe deps [flags] [path...]
-  ppe serve [flags]
-  ppe setup [flags]
-  ppe --help
-  ppe --version
+  piplyzer scan [flags] [path...]
+  piplyzer deps [flags] [path...]
+  piplyzer serve [flags]
+  piplyzer setup [flags]
+  piplyzer --help
+  piplyzer --version
 
 commands:
   scan      scan workflows and exit non-zero if anything blocks
@@ -108,7 +108,7 @@ commands:
   serve     run the GitHub App webhook server that posts a check run
   setup     create a GitHub App and write its credentials locally
 
-Running ppe with no command is an error rather than a scan of the current
+Running piplyzer with no command is an error rather than a scan of the current
 directory, so that a mistyped command line cannot be read as a clean result.
 
 flags:
@@ -125,16 +125,16 @@ serve flags:
       --timeout <duration>    how long one scan may take (default 60s)
 
 serve reads its credentials from the environment:
-  PPE_APP_ID, PPE_PRIVATE_KEY_PATH, PPE_WEBHOOK_SECRET
+  PIPLYZER_APP_ID, PIPLYZER_PRIVATE_KEY_PATH, PIPLYZER_WEBHOOK_SECRET
 
 setup flags:
       --addr <host:port>      local callback address (default 127.0.0.1:8081)
       --config-dir <dir>      where to write app.pem and config.env
-                               (default PPE_CONFIG_DIR, then the user config
+                               (default PIPLYZER_CONFIG_DIR, then the user config
                                directory)
 
 setup prints a local URL. Open it to create the GitHub App; GitHub returns a
-one-time code to the local callback, which ppe exchanges for the private key.
+one-time code to the local callback, which piplyzer exchanges for the private key.
 The key is written with mode 0600 and is needed by serve.
 
 arguments:

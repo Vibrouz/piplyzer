@@ -2,17 +2,17 @@
 # Already committed once; untrack with: git rm -r --cached plans/
 plans/
 
-# Go build output. The binary pattern is root anchored: a bare "ppe" also
+# Go build output. The binary pattern is root anchored: a bare "piplyzer" also
 # matches the cmd/ppe source directory, which would leave the entrypoint
 # untracked while still ignoring the built binary.
-/ppe
+/piplyzer
 *.exe
 *.test
 *.out
 coverage.out
 
-# Local GitHub App credentials created by "ppe setup" and scripts/local.sh.
-.ppe/
+# Local GitHub App credentials created by "piplyzer setup" and scripts/local.sh.
+.piplyzer/
 
 # Editors / OS
 .DS_Store

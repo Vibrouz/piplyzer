@@ -1,37 +1,37 @@
-name: ppe
+name: piplyzer
 description: Scan GitHub Actions workflows and npm lockfiles for supply chain attack patterns.
 author: Vibrouz
 
 inputs:
   version:
-    description: The ppe release to run.
+    description: The piplyzer release to run.
     required: false
     default: v0.2.0
 
 runs:
   using: composite
   steps:
-    - name: Download ppe
+    - name: Download piplyzer
       shell: bash
       env:
         # github.action_ref and github.action_repository are only available
         # through the env context of a composite action, not in a run keyword.
-        PPE_VERSION: ${{ inputs.version }}
-        PPE_REPOSITORY: ${{ github.action_repository }}
+        PIPLYZER_VERSION: ${{ inputs.version }}
+        PIPLYZER_REPOSITORY: ${{ github.action_repository }}
         RUNNER_ARCH: ${{ runner.arch }}
       run: |
         set -euo pipefail
 
         case "$RUNNER_ARCH" in
-          X64)  asset="ppe-linux-amd64" ;;
-          ARM64) asset="ppe-linux-arm64" ;;
-          *) echo "ppe: unsupported runner architecture: $RUNNER_ARCH" >&2; exit 1 ;;
+          X64)  asset="piplyzer-linux-amd64" ;;
+          ARM64) asset="piplyzer-linux-arm64" ;;
+          *) echo "piplyzer: unsupported runner architecture: $RUNNER_ARCH" >&2; exit 1 ;;
         esac
 
-        url="https://github.com/${PPE_REPOSITORY}/releases/download/${PPE_VERSION}/${asset}"
-        echo "ppe: downloading ${url}"
-        curl --fail --silent --show-error --location --retry 3 --output "${RUNNER_TEMP}/ppe" "$url"
-        chmod +x "${RUNNER_TEMP}/ppe"
+        url="https://github.com/${PIPLYZER_REPOSITORY}/releases/download/${PIPLYZER_VERSION}/${asset}"
+        echo "piplyzer: downloading ${url}"
+        curl --fail --silent --show-error --location --retry 3 --output "${RUNNER_TEMP}/piplyzer" "$url"
+        chmod +x "${RUNNER_TEMP}/piplyzer"
 
     - name: Scan workflows
       shell: bash
@@ -53,10 +53,10 @@ runs:
         # looked at the top would skip them and report a clean result for
         # workflows it never read.
         if [ -z "$(find . -type d -name workflows -path '*/.github/workflows' -print -quit)" ]; then
-          echo "ppe: no .github/workflows directory, skipping the workflow scan"
+          echo "piplyzer: no .github/workflows directory, skipping the workflow scan"
           exit 0
         fi
-        "${RUNNER_TEMP}/ppe" scan .
+        "${RUNNER_TEMP}/piplyzer" scan .
 
     - name: Check dependencies
       shell: bash
@@ -67,7 +67,7 @@ runs:
         # keeps the action usable on a repository that is not a JavaScript
         # project, which is most of them.
         if [ ! -f package-lock.json ]; then
-          echo "ppe: no package-lock.json, skipping the dependency check"
+          echo "piplyzer: no package-lock.json, skipping the dependency check"
           exit 0
         fi
-        "${RUNNER_TEMP}/ppe" deps .
+        "${RUNNER_TEMP}/piplyzer" deps .

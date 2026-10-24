@@ -1,11 +1,11 @@
 .git
 .github
 .gitignore
-.ppe
+.piplyzer
 plans
 scripts
 *.md
-/ppe
+/piplyzer
 *.test
 *.out
 coverage.out

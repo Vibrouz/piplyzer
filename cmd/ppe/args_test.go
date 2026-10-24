@@ -139,7 +139,7 @@ func TestParseArgsGrammar(t *testing.T) {
 // directory.
 //
 // The exit code is the part that matters. Exit 0 means the scan finished and
-// nothing blocks, so a CI step running "ppe" where it meant "ppe scan ." would
+	// nothing blocks, so a CI step running "piplyzer" where it meant "piplyzer scan ." would
 // read a mistyped command line as a clean repository.
 func TestParseArgsRejectsNoCommand(t *testing.T) {
 	_, err := parseArgs([]string{})
@@ -229,7 +229,7 @@ func TestRunDispatch(t *testing.T) {
 		wantOut  string
 	}{
 		{"help exits clean", []string{"--help"}, exitOK, "usage:"},
-		{"version exits clean", []string{"--version"}, exitOK, "ppe "},
+		{"version exits clean", []string{"--version"}, exitOK, "piplyzer "},
 		{"bad flag is a usage error", []string{"scan", "--nope"}, exitIncomplete, "unknown flag"},
 		{"unknown command is a usage error", []string{"nope"}, exitIncomplete, "unknown command"},
 	}
@@ -242,7 +242,7 @@ func TestRunDispatch(t *testing.T) {
 				t.Errorf("exit = %d, want %d", got, tt.wantExit)
 			}
 			// Help and version go to stdout, errors to stderr. Mixing them means
-			// `ppe --help | less` prints an error.
+			// `piplyzer --help | less` prints an error.
 			combined := stdout.String() + stderr.String()
 			if !strings.Contains(combined, tt.wantOut) {
 				t.Errorf("output = %q, want it to contain %q", combined, tt.wantOut)
@@ -384,7 +384,7 @@ func TestServeWithoutCredentialsExitsIncomplete(t *testing.T) {
 	if code != exitIncomplete {
 		t.Errorf("exit = %d, want %d", code, exitIncomplete)
 	}
-	if !strings.Contains(stderr.String(), "PPE_WEBHOOK_SECRET") {
+	if !strings.Contains(stderr.String(), "PIPLYZER_WEBHOOK_SECRET") {
 		t.Errorf("stderr = %q, want the missing variable named", stderr.String())
 	}
 }

@@ -52,8 +52,8 @@ jobs:
           # release. The workflow is what a caller runs, so a workflow
           # pointing at a different release would have the caller running
           # one version's action against another version's rules.
-          if [ ! -f .github/workflows/ppe.yml ]; then
-            echo "::error::.github/workflows/ppe.yml is missing" >&2
+          if [ ! -f .github/workflows/piplyzer.yml ]; then
+            echo "::error::.github/workflows/piplyzer.yml is missing" >&2
             exit 1
           fi
           workflow_version=$(awk '
@@ -64,31 +64,31 @@ jobs:
               print
               exit
             }
-          ' .github/workflows/ppe.yml)
+          ' .github/workflows/piplyzer.yml)
           if [ -z "$workflow_version" ]; then
             echo "::error::no version found in the reusable workflow" >&2
             exit 1
           fi
           if [ "${GITHUB_REF_NAME}" != "$workflow_version" ]; then
             echo "::error::tag ${GITHUB_REF_NAME} does not match the reusable workflow's version ${workflow_version}" >&2
-            echo "::error::update the version in .github/workflows/ppe.yml and commit it before tagging" >&2
+            echo "::error::update the version in .github/workflows/piplyzer.yml and commit it before tagging" >&2
             exit 1
           fi
-          echo "ppe: releasing ${version}"
+          echo "piplyzer: releasing ${version}"
 
       - name: Build
         shell: bash
         run: |
           set -euo pipefail
           # CGO off so the binary is static, and the version stamped in so
-          # "ppe --version" says which release it is.
+          # "piplyzer --version" says which release it is.
           for arch in amd64 arm64; do
             CGO_ENABLED=0 GOOS=linux GOARCH=$arch \
               go build -trimpath \
                 -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
-                -o "ppe-linux-${arch}" ./cmd/ppe
+                -o "piplyzer-linux-${arch}" ./cmd/ppe
           done
-          ls -l ppe-linux-*
+          ls -l piplyzer-linux-*
 
       - name: Publish
         shell: bash
@@ -101,21 +101,21 @@ jobs:
           # release whose tag points at code that was never tagged.
           #
           # The notes carry the commit, because that is what a caller has to
-          # pin. A tag would be easier to write and ppe's own rule 1 blocks
-          # it, and a caller who has not installed ppe has nothing stopping
+          # pin. A tag would be easier to write and piplyzer's own rule 1 blocks
+          # it, and a caller who has not installed piplyzer has nothing stopping
           # them writing one. Putting the commit in the notes is the
           # difference between the setup being a copy and paste and the
           # setup being a hunt through the repository.
           gh release create "${GITHUB_REF_NAME}" \
             --verify-tag \
             --title "${GITHUB_REF_NAME}" \
-            --notes "ppe ${GITHUB_REF_NAME}.
+            --notes "piplyzer ${GITHUB_REF_NAME}.
 
           The reusable workflow, for a caller who wants the check and nothing else:
 
-            uses: Vibrouz/whoa/.github/workflows/ppe.yml@${GITHUB_SHA}
+            uses: Vibrouz/whoa/.github/workflows/piplyzer.yml@${GITHUB_SHA}
 
           The action, for a caller who wants the check inside a job they control:
 
             uses: Vibrouz/whoa@${GITHUB_SHA}" \
-            ppe-linux-amd64 ppe-linux-arm64
+            piplyzer-linux-amd64 piplyzer-linux-arm64

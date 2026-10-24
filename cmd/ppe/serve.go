@@ -23,7 +23,7 @@ import (
 	"github.com/Vibrouz/whoa/internal/webhook"
 )
 
-// serve is the entry point for "ppe serve".
+// serve is the entry point for "piplyzer serve".
 //
 // It is the external check: GitHub calls this process when a pull request
 // changes, and the process posts a check run on the commit. Because the check
@@ -34,19 +34,19 @@ import (
 // environment is injected in tests: a secret is not something to put on a
 // command line where it lands in the process list and the shell history.
 func serve(cmd command, _ io.Writer, stderr io.Writer, env func(string) string) int {
-	secret := env("PPE_WEBHOOK_SECRET")
+	secret := env("PIPLYZER_WEBHOOK_SECRET")
 	if secret == "" {
-		fmt.Fprintln(stderr, "ppe: PPE_WEBHOOK_SECRET is not set")
+		fmt.Fprintln(stderr, "piplyzer: PIPLYZER_WEBHOOK_SECRET is not set")
 		return exitIncomplete
 	}
 
-	cfg, err := appauth.Load(env("PPE_APP_ID"), env("PPE_PRIVATE_KEY_PATH"))
+	cfg, err := appauth.Load(env("PIPLYZER_APP_ID"), env("PIPLYZER_PRIVATE_KEY_PATH"))
 	if err != nil {
-		fmt.Fprintf(stderr, "ppe: %v\n", err)
+		fmt.Fprintf(stderr, "piplyzer: %v\n", err)
 		return exitIncomplete
 	}
 
-	logger := log.New(stderr, "ppe: ", log.LstdFlags)
+	logger := log.New(stderr, "piplyzer: ", log.LstdFlags)
 	srv := newServer(serverOptions{
 		Addr:    cmd.addr,
 		Workers: cmd.workers,
@@ -62,7 +62,7 @@ func serve(cmd command, _ io.Writer, stderr io.Writer, env func(string) string) 
 
 	logger.Printf("listening on %s", cmd.addr)
 	if err := srv.run(ctx); err != nil {
-		fmt.Fprintf(stderr, "ppe: %v\n", err)
+		fmt.Fprintf(stderr, "piplyzer: %v\n", err)
 		return exitIncomplete
 	}
 	return exitOK

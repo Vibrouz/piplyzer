@@ -35,7 +35,7 @@ import (
 const (
 	setupHomepage        = "https://github.com/Vibrouz/whoa"
 	setupAPIBase         = "https://api.github.com"
-	setupPlaceholderHook = "https://example.com/ppe-webhook"
+	setupPlaceholderHook = "https://example.com/piplyzer-webhook"
 )
 
 type hookAttributes struct {
@@ -78,7 +78,7 @@ type setupResult struct {
 func setup(cmd command, stdout, stderr io.Writer, env func(string) string) int {
 	dir, err := setupConfigDir(cmd.configDir, env)
 	if err != nil {
-		fmt.Fprintf(stderr, "ppe: %v\n", err)
+		fmt.Fprintf(stderr, "piplyzer: %v\n", err)
 		return exitIncomplete
 	}
 
@@ -93,7 +93,7 @@ func setup(cmd command, stdout, stderr io.Writer, env func(string) string) int {
 		Out:       stdout,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "ppe: %v\n", err)
+		fmt.Fprintf(stderr, "piplyzer: %v\n", err)
 		return exitIncomplete
 	}
 	return exitOK
@@ -103,14 +103,14 @@ func setupConfigDir(flag string, env func(string) string) (string, error) {
 	if flag != "" {
 		return flag, nil
 	}
-	if dir := env("PPE_CONFIG_DIR"); dir != "" {
+	if dir := env("PIPLYZER_CONFIG_DIR"); dir != "" {
 		return dir, nil
 	}
 	base, err := os.UserConfigDir()
 	if err != nil {
 		return "", fmt.Errorf("no config directory: %w", err)
 	}
-	return filepath.Join(base, "ppe"), nil
+	return filepath.Join(base, "piplyzer"), nil
 }
 
 func runSetup(ctx context.Context, opts setupOptions) error {
@@ -166,7 +166,7 @@ func runSetup(ctx context.Context, opts setupOptions) error {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()
 
-	fmt.Fprintf(opts.Out, "ppe: open %s/ in your browser\n", local)
+	fmt.Fprintf(opts.Out, "piplyzer: open %s/ in your browser\n", local)
 
 	var res setupResult
 	select {
@@ -188,10 +188,10 @@ func runSetup(ctx context.Context, opts setupOptions) error {
 	}
 
 	install := "https://github.com/apps/" + url.PathEscape(res.slug) + "/installations/new"
-	fmt.Fprintf(opts.Out, "ppe: created app %s\n", res.slug)
-	fmt.Fprintf(opts.Out, "ppe: credentials written to %s\n", opts.ConfigDir)
-	fmt.Fprintf(opts.Out, "ppe: install it: %s\n", install)
-	fmt.Fprintf(opts.Out, "ppe: then add a branch ruleset that requires the ppe check\n")
+	fmt.Fprintf(opts.Out, "piplyzer: created app %s\n", res.slug)
+	fmt.Fprintf(opts.Out, "piplyzer: credentials written to %s\n", opts.ConfigDir)
+	fmt.Fprintf(opts.Out, "piplyzer: install it: %s\n", install)
+	fmt.Fprintf(opts.Out, "piplyzer: then add a branch ruleset that requires the piplyzer check\n")
 	return nil
 }
 
@@ -207,14 +207,14 @@ func newManifest(redirect, hookURL string) (appManifest, error) {
 		return appManifest{}, err
 	}
 	return appManifest{
-		Name:        "ppe-" + suffix,
+		Name:        "piplyzer-" + suffix,
 		URL:         setupHomepage,
 		RedirectURL: redirect,
 		HookAttributes: &hookAttributes{
 			URL:    hookURL,
 			Active: true,
 		},
-		Description: "External ppe check for GitHub Actions workflows.",
+		Description: "External piplyzer check for GitHub Actions workflows.",
 		Public:      false,
 		DefaultPermissions: map[string]string{
 			"checks":        "write",
@@ -323,7 +323,7 @@ func newSetupHandler(state, manifestJSON, configDir, apiBase string) (http.Handl
 		install := "https://github.com/apps/" + url.PathEscape(app.Slug) + "/installations/new"
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintf(w, `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>ppe setup complete</title></head>
+<html lang="en"><head><meta charset="utf-8"><title>piplyzer setup complete</title></head>
 <body><h1>App created</h1><p>You can close this tab.</p>
 <p><a href="%s">Install %s</a></p></body></html>
 `, html.EscapeString(install), html.EscapeString(app.Slug))
@@ -395,7 +395,7 @@ func writeApp(dir string, app manifestConversion) error {
 		return err
 	}
 
-	config := fmt.Sprintf("PPE_APP_ID=%d\nPPE_WEBHOOK_SECRET=%s\nPPE_APP_SLUG=%s\nPPE_PRIVATE_KEY_PATH=%s\n",
+	config := fmt.Sprintf("PIPLYZER_APP_ID=%d\nPIPLYZER_WEBHOOK_SECRET=%s\nPIPLYZER_APP_SLUG=%s\nPIPLYZER_PRIVATE_KEY_PATH=%s\n",
 		app.ID, secret, app.Slug, shellValue(keyPath))
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		_ = os.Remove(keyPath)
