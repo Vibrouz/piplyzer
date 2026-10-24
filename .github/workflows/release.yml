@@ -113,9 +113,9 @@ jobs:
 
           The reusable workflow, for a caller who wants the check and nothing else:
 
-            uses: Vibrouz/whoa/.github/workflows/piplyzer.yml@${GITHUB_SHA}
+            uses: Vibrouz/piplyzer/.github/workflows/piplyzer.yml@${GITHUB_SHA}
 
           The action, for a caller who wants the check inside a job they control:
 
-            uses: Vibrouz/whoa@${GITHUB_SHA}" \
+            uses: Vibrouz/piplyzer@${GITHUB_SHA}" \
             piplyzer-linux-amd64 piplyzer-linux-arm64

@@ -43,10 +43,10 @@ You can use piplyzer in three ways:
 
 ```bash
 # From source
-go build ./cmd/ppe
+go build -o piplyzer ./cmd/ppe
 
 # Or download a release binary
-curl -L -o piplyzer https://github.com/Vibrouz/whoa/releases/download/v0.2.0/piplyzer-linux-amd64
+curl -L -o piplyzer https://github.com/Vibrouz/piplyzer/releases/download/v1.0.0/piplyzer-linux-amd64
 chmod +x piplyzer
 ```
 
@@ -83,7 +83,7 @@ on:
 
 jobs:
   piplyzer:
-    uses: Vibrouz/whoa/.github/workflows/piplyzer.yml@v0.2.0
+    uses: Vibrouz/piplyzer/.github/workflows/piplyzer.yml@v1.0.0
 ```
 
 The action downloads the `piplyzer` binary, runs `piplyzer scan` on `.github/workflows`, and runs `piplyzer deps` if `package-lock.json` exists. It skips gracefully when neither is present.
@@ -100,7 +100,7 @@ Choose one setup path:
 ./scripts/local.sh
 ```
 
-This builds the `piplyzer:local` Docker image, creates the GitHub App via the manifest flow, writes `.piplyzer/app.pem` and `.piplyzer/config.env` (mode 0600), starts the `piplyzer-local` container, opens a Quick Tunnel, and updates the App webhook URL.
+This builds the `piplyzer` binary, creates the GitHub App via the manifest flow, writes `.piplyzer/app.pem` and `.piplyzer/config.env` (mode 0600), starts the check server on `127.0.0.1:8080`, opens a Quick Tunnel, and updates the App webhook URL.
 
 Override defaults:
 ```bash
@@ -111,7 +111,7 @@ PIPLYZER_CONFIG_DIR=.piplyzer PIPLYZER_PORT=8082 ./scripts/local.sh
 
 1. **Build the binary**
    ```bash
-   go build ./cmd/ppe
+   go build -o piplyzer ./cmd/ppe
    ```
 
 2. **Create the App**

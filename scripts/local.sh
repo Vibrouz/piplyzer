@@ -1,45 +1,40 @@
 #!/usr/bin/env bash
-# Run the piplyzer GitHub App locally: create it on first run, start the container,
-# open a Cloudflare Quick Tunnel, point the App webhook at that tunnel, and
-# keep the two processes together. The tunnel URL changes whenever this script
-# restarts, so the webhook is updated again each time.
+# Run the piplyzer GitHub App locally: build the binary, create the App on first
+# run, start the check server, open a Cloudflare Quick Tunnel, point the App
+# webhook at that tunnel, and keep the two processes together. The tunnel URL
+# changes whenever this script restarts, so the webhook is updated again each time.
 set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 config_dir=${PIPLYZER_CONFIG_DIR:-"$repo_root/.piplyzer"}
-# Docker treats a relative bind-mount source as a named volume, so resolve the
-# path before it reaches -v. PIPLYZER_CONFIG_DIR=.piplyzer is the obvious thing to type.
+# A relative config dir would resolve against wherever the caller stood, so
+# make it absolute before anything runs from a different directory.
 case "$config_dir" in
 /*) ;;
 *) config_dir="$PWD/$config_dir" ;;
 esac
-image=piplyzer:local
-container=piplyzer-local
+binary="$repo_root/piplyzer"
 # Overridable so the runner can run beside another service on this machine.
 port=${PIPLYZER_PORT:-8080}
 setup_port=8081
 api=https://api.github.com
 
-for cmd in docker cloudflared openssl curl; do
+for cmd in go cloudflared openssl curl; do
 	if ! command -v "$cmd" >/dev/null 2>&1; then
 		echo "piplyzer: $cmd is required" >&2
 		exit 1
 	fi
 done
 
-# Rebuild quietly. An image from yesterday would run yesterday's binary, and a
-# cached rebuild costs a few seconds.
-docker build -q -t "$image" "$repo_root" >/dev/null
+# Rebuild every run. A binary from yesterday would run yesterday's code, and a
+# cached rebuild costs a second.
+go build -C "$repo_root" -o "$binary" ./cmd/ppe
 
 if [ ! -f "$config_dir/config.env" ]; then
 	mkdir -p "$config_dir"
 	chmod 700 "$config_dir"
 	echo "piplyzer: creating the GitHub App"
-	docker run --rm \
-		-p "127.0.0.1:${setup_port}:8081" \
-		-v "$config_dir:/data" \
-		--user "$(id -u):$(id -g)" \
-		"$image" setup --addr 0.0.0.0:8081 --config-dir /data
+	"$binary" setup --addr "127.0.0.1:${setup_port}" --config-dir "$config_dir"
 	if [ ! -f "$config_dir/config.env" ]; then
 		echo "piplyzer: setup did not write $config_dir/config.env" >&2
 		exit 1
@@ -132,16 +127,19 @@ patch_with_retry() {
 
 preflight_hook
 
-docker rm -f "$container" >/dev/null 2>&1 || true
+serve_log=$(mktemp "${TMPDIR:-/tmp}/piplyzer-serve.XXXXXX.log")
+serve_pid=""
 echo "piplyzer: starting the check server"
-docker run -d --name "$container" \
-	--user "$(id -u):$(id -g)" \
-	-p "127.0.0.1:${port}:8080" \
-	-v "$config_dir:/data:ro" \
-	-e PIPLYZER_APP_ID \
-	-e PIPLYZER_WEBHOOK_SECRET \
-	-e PIPLYZER_PRIVATE_KEY_PATH=/data/app.pem \
-	"$image" serve --addr :8080 >/dev/null
+PIPLYZER_PRIVATE_KEY_PATH="$key" "$binary" serve --addr "127.0.0.1:${port}" >"$serve_log" 2>&1 &
+serve_pid=$!
+
+stop_server() {
+	if [ -n "${serve_pid:-}" ]; then
+		kill "$serve_pid" 2>/dev/null || true
+		wait "$serve_pid" 2>/dev/null || true
+		serve_pid=""
+	fi
+}
 
 healthy=0
 for _ in {1..50}; do
@@ -149,14 +147,14 @@ for _ in {1..50}; do
 		healthy=1
 		break
 	fi
-	if [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null || echo false)" != "true" ]; then
+	if ! kill -0 "$serve_pid" 2>/dev/null; then
 		break
 	fi
 	sleep 0.2
 done
 if [ "$healthy" != 1 ]; then
 	echo "piplyzer: the check server did not become healthy" >&2
-	docker logs "$container" >&2 || true
+	cat "$serve_log" >&2 || true
 	exit 1
 fi
 
@@ -181,8 +179,8 @@ cleanup() {
 	trap - INT TERM EXIT
 	stopping=1
 	stop_tunnel
-	docker rm -f "$container" >/dev/null 2>&1 || true
-	rm -f "$cf_log"
+	stop_server
+	rm -f "$cf_log" "$serve_log"
 }
 trap cleanup INT TERM EXIT
 

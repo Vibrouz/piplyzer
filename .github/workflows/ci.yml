@@ -60,4 +60,4 @@ jobs:
       # other actions here are pinned. That commit's action.yml has v0.1.1 as
       # the version it downloads, so the action and the binary it fetches are
       # the same release.
-      - uses: Vibrouz/whoa@a0bcef2c5495bd3894e6807b63892c7c5719bb56 # v0.1.1
+      - uses: Vibrouz/piplyzer@a0bcef2c5495bd3894e6807b63892c7c5719bb56 # v0.1.1
