@@ -83,8 +83,10 @@ on:
 
 jobs:
   piplyzer:
-    uses: Vibrouz/piplyzer/.github/workflows/piplyzer.yml@v1.0.0
+    uses: Vibrouz/piplyzer/.github/workflows/piplyzer.yml@<commit sha>
 ```
+
+Pin the commit named in the release notes, not the tag: the scanner blocks movable tags (PPE-001), and it would block this reference too.
 
 The action downloads the `piplyzer` binary, runs `piplyzer scan` on `.github/workflows`, and runs `piplyzer deps` if `package-lock.json` exists. It skips gracefully when neither is present.
 
