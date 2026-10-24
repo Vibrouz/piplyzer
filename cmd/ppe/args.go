@@ -52,10 +52,10 @@ type command struct {
 	workers int
 	timeout time.Duration
 
-	// configDir is where setup writes the App key and environment file. It is
-	// empty when the caller did not choose one, so setup can fall back to
-	// PPE_CONFIG_DIR or the user config directory.
+	// configDir is where setup writes the App key and environment file.
 	configDir string
+	// hookUrl is an optional webhook URL for setup; empty means placeholder.
+	hookUrl string
 }
 
 // scanDefaults is the current directory, spelled as "." rather than resolved, so
@@ -206,6 +206,15 @@ func parseArgs(args []string) (command, error) {
 				return cmd, errors.New("--config-dir needs a value")
 			}
 			cmd.configDir = value
+		case "--hook-url":
+			if !hasValue {
+				if i+1 >= len(args) {
+					return cmd, errors.New("--hook-url needs a value")
+				}
+				i++
+				value = args[i]
+			}
+			cmd.hookUrl = value
 		default:
 			return cmd, fmt.Errorf("unknown flag %q", name)
 		}

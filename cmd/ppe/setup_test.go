@@ -130,7 +130,7 @@ func TestShellValue(t *testing.T) {
 // GitHub rejects a manifest without a hook, even though the real URL is not
 // known until the runner has a tunnel.
 func TestManifestHasHook(t *testing.T) {
-	manifest, err := newManifest("http://127.0.0.1:8081/callback")
+	manifest, err := newManifest("http://127.0.0.1:8081/callback", "https://example.com/ppe-webhook")
 	if err != nil {
 		t.Fatal(err)
 	}

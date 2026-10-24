@@ -66,6 +66,7 @@ type setupOptions struct {
 	Addr      string
 	ConfigDir string
 	APIBase   string
+	HookURL   string // empty = placeholder
 	Out       io.Writer
 }
 
@@ -88,6 +89,7 @@ func setup(cmd command, stdout, stderr io.Writer, env func(string) string) int {
 		Addr:      cmd.addr,
 		ConfigDir: dir,
 		APIBase:   setupAPIBase,
+		HookURL:   cmd.hookUrl,
 		Out:       stdout,
 	})
 	if err != nil {
@@ -143,7 +145,11 @@ func runSetup(ctx context.Context, opts setupOptions) error {
 	if err != nil {
 		return err
 	}
-	manifest, err := newManifest(local + "/callback")
+	hookURL := setupPlaceholderHook
+	if opts.HookURL != "" {
+		hookURL = opts.HookURL
+	}
+	manifest, err := newManifest(local+"/callback", hookURL)
 	if err != nil {
 		return err
 	}
@@ -195,7 +201,7 @@ func shutdownSetup(srv *http.Server) {
 	_ = srv.Shutdown(ctx)
 }
 
-func newManifest(redirect string) (appManifest, error) {
+func newManifest(redirect, hookURL string) (appManifest, error) {
 	suffix, err := randomHex(4)
 	if err != nil {
 		return appManifest{}, err
@@ -205,7 +211,7 @@ func newManifest(redirect string) (appManifest, error) {
 		URL:         setupHomepage,
 		RedirectURL: redirect,
 		HookAttributes: &hookAttributes{
-			URL:    setupPlaceholderHook,
+			URL:    hookURL,
 			Active: true,
 		},
 		Description: "External ppe check for GitHub Actions workflows.",
