@@ -6,7 +6,7 @@ inputs:
   version:
     description: The ppe release to run.
     required: false
-    default: v0.1.2
+    default: v0.2.0
 
 runs:
   using: composite
