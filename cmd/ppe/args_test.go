@@ -139,7 +139,7 @@ func TestParseArgsGrammar(t *testing.T) {
 // directory.
 //
 // The exit code is the part that matters. Exit 0 means the scan finished and
-	// nothing blocks, so a CI step running "piplyzer" where it meant "piplyzer scan ." would
+// nothing blocks, so a CI step running "piplyzer" where it meant "piplyzer scan ." would
 // read a mistyped command line as a clean repository.
 func TestParseArgsRejectsNoCommand(t *testing.T) {
 	_, err := parseArgs([]string{})
