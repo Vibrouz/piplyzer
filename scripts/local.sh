@@ -19,16 +19,25 @@ port=${PIPLYZER_PORT:-8080}
 setup_port=8081
 api=https://api.github.com
 
-for cmd in go cloudflared openssl curl; do
+for cmd in cloudflared openssl curl; do
 	if ! command -v "$cmd" >/dev/null 2>&1; then
 		echo "piplyzer: $cmd is required" >&2
 		exit 1
 	fi
 done
 
-# Rebuild every run. A binary from yesterday would run yesterday's code, and a
-# cached rebuild costs a second.
-go build -C "$repo_root" -o "$binary" ./cmd/ppe
+# Prefer a pre-built binary or download from releases; build only if Go is present.
+if [ -x "$binary" ]; then
+	echo "piplyzer: using existing binary $binary"
+elif command -v go >/dev/null 2>&1; then
+	echo "piplyzer: building binary..."
+	go build -C "$repo_root" -o "$binary" ./cmd/ppe
+else
+	echo "piplyzer: no binary found and no Go installed; downloading v1.0.0..." >&2
+	curl -fsS -L -o "$binary" "https://github.com/Vibrouz/piplyzer/releases/download/v1.0.0/piplyzer-linux-amd64" 2>/dev/null || \
+		echo "piplyzer: download failed; please install Go or download the binary manually" >&2
+	chmod +x "$binary"
+fi
 
 if [ ! -f "$config_dir/config.env" ]; then
 	mkdir -p "$config_dir"
@@ -66,20 +75,20 @@ app_jwt() {
 	header=$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | b64url)
 	payload=$(printf '{"iat":%d,"exp":%d,"iss":%s}' "$((now - 60))" "$((now + 540))" "$PIPLYZER_APP_ID" | b64url)
 	signing="$header.$payload"
-	if ! sig=$(printf '%s' "$signing" | openssl dgst -sha256 -sign "$key" 2>/dev/null); then
+	if ! sig=$(printf '%s' "$signing" | openssl dgst -sha256 -sign "$key" | b64url); then
 		return 1
 	fi
-	printf '%s.%s' "$signing" "$(printf '%s' "$sig" | b64url)"
+	printf '%s.%s' "$signing" "$sig"
 }
 
 hook_url() {
 	local jwt
 	jwt=$(app_jwt) || return 1
-	curl -sS \
+	curl -fsS --show-error --max-time 10 \
 		-H "Authorization: Bearer $jwt" \
 		-H "Accept: application/vnd.github+json" \
 		-H "X-GitHub-Api-Version: 2022-11-28" \
-		"$api/app/hook/config" |
+		"$api/app/hook/config" 2>/dev/null |
 		sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
 }
 
@@ -105,13 +114,16 @@ patch_hook() {
 	local url=$1 jwt body
 	jwt=$(app_jwt) || return 1
 	body=$(printf '{"url":"%s","content_type":"json","secret":"%s"}' "$url/webhook" "$PIPLYZER_WEBHOOK_SECRET")
-	curl -fsS -X PATCH \
+	if curl -fsS --max-time 10 -X PATCH \
 		-H "Authorization: Bearer $jwt" \
 		-H "Accept: application/vnd.github+json" \
 		-H "X-GitHub-Api-Version: 2022-11-28" \
 		-H "Content-Type: application/json" \
 		-d "$body" \
-		"$api/app/hook/config" >/dev/null
+		"$api/app/hook/config" >/dev/null 2>&1; then
+		return 0
+	fi
+	return 1
 }
 
 patch_with_retry() {
