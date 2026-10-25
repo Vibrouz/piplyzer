@@ -66,8 +66,8 @@ jobs:
       # for. A tag can be moved, and a moved tag runs code that nobody
       # reviewed, so the two things are split: the downloader is pinned
       # because it is code that runs, and the version is an input because
-      # it is a release to fetch. The downloader does not change, so its
-      # commit does not either, and the version moves on every release.
-      - uses: Vibrouz/piplyzer@1697676cdcebe8bf2626e96e741727d26040174c
+      # it is a release to fetch. The downloader rarely changes, so the
+      # pin is stable, and the version moves on every release.
+      - uses: Vibrouz/piplyzer@819d30f763d8e9810a8b9cad16f8713d57db71e4
         with:
           version: v1.0.0
