@@ -139,6 +139,8 @@ PIPLYZER_CONFIG_DIR=.piplyzer PIPLYZER_PORT=8082 ./scripts/local.sh
    - Optionally check "Require branches to be up to date before merging" (strict mode)
    - Save the ruleset
 
+   Required status checks are evaluated on push as well as merge, and the App only posts checks on pull requests, so a direct push to the protected branch is rejected. If maintainers need to push directly, add them to the ruleset's bypass list (for example Repository admin). Otherwise keep the branch PR-only.
+
 7. **Run the webhook server**
    ```bash
    piplyzer serve --addr :8080
@@ -166,7 +168,7 @@ No local runner needed. The App is active immediately after manifest completion.
 | `.piplyzer/app.pem` already exists | `setup` refuses to overwrite. Remove the directory or use a different `--config-dir`. |
 | No `--hook-url` and no local runner | Webhook stays on the placeholder (`https://example.com/piplyzer-webhook`) and receives nothing. Use `--hook-url` for standalone installs. |
 | Ruleset requires `ppe` | Old check name; update the ruleset to require `piplyzer`. |
-| Direct push to `main` | Bypasses the gate; branch protection is required. |
+| Direct push to `main` is rejected | The check only runs on pull requests. Add a bypass actor or open a pull request. |
 
 ## Design principles
 
