@@ -33,7 +33,7 @@ import (
 // public address. The placeholder is replaced by the local runner as soon as
 // it has a tunnel.
 const (
-	setupHomepage        = "https://github.com/Vibrouz/whoa"
+	setupHomepage        = "https://github.com/Vibrouz/piplyzer"
 	setupAPIBase         = "https://api.github.com"
 	setupPlaceholderHook = "https://example.com/piplyzer-webhook"
 )
