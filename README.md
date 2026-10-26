@@ -2,8 +2,8 @@
 
 Supply-chain gate for GitHub Actions and npm dependencies. Scans workflow YAML (14 rules: PPE-001–PPE-014) and lockfiles (DEP-D1/D2). Runs as CLI, reusable Action, or self-hosted GitHub App posting required check runs. Single Go binary (v1.0.0), pinned by commit SHA, external to repo (not editable by PR authors).
 
-Project info (team, submission): https://app.notion.com/p/Piplyzer-Lightweight-CI-CD-Supplychain-detector-and-gate-4053dfaa62f280ffac24e36be7ddf69a
-Video demo: demo/lv_0_20261026052520.mp4
+Project info (team, submission): https://app.notion.com/p/Piplyzer-Lightweight-CI-CD-Supplychain-detector-and-gate-4053dfaa62f280ffac24e36be7ddf69a  
+Video demo: [Here.](demo/lv_0_20261026052520.mp4)  
 
 **piplyzer** scans GitHub Actions workflows and npm lockfiles for supply chain attack patterns. It runs as a standalone CLI, a GitHub Action, or a self-hosted GitHub App that posts check runs on pull requests, so the gate cannot be bypassed by editing the workflow file.
 
